@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to semantic versioning after the bootstrap line is established.
 
+## [0.1.0] - 2026-04-30
+
+### Added
+
+- Hardened slash-free Pi command registration for `/zerg`, `/zerg-swarm`, and `/swarm` command aliases.
+- Added Pi-shaped command handler notifications for help, status, tree, and thinking-step parser output.
+- Added command-surface tests for aliases, normalization, unknown usage, multiline steps, and duplicate registration.
+
+### Changed
+
+- Updated package metadata and user-facing scaffold status/help text for the v0.1.0 command-surface milestone.
+
+### Not Yet Implemented
+
+- Real subagent spawning, team runtime/loops, task queues, live Pi TUI overlays, and manual/automation intervention controls remain planned.
+
 ## [0.0.0] - 2026-04-30
 
 ### Added

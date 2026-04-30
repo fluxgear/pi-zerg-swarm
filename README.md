@@ -2,7 +2,7 @@
 
 `pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
 
-> v0.0.0 status: bootstrap scaffold only. Command registration, state contracts, thinking-step parsing, and text renderers are present; real subagent spawning, team loops, live overlays, and intervention controls are planned but not implemented yet.
+> v0.1.0 status: command-surface milestone. Slash-free Pi command registration, `/zerg` aliases, scaffold help/status/tree output, baseline thinking-step parsing, and text renderers are present; real subagent spawning, team loops, task queues, live overlays, and intervention controls are planned but not implemented yet.
 
 ## Commands
 
@@ -10,7 +10,7 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v0.0.0 these commands return scaffold help, status, tree, or parser output.
+At v0.1.0 these commands display scaffold help, status, tree, or thinking-step parser output through Pi command handlers.
 
 ## Architecture
 
@@ -69,7 +69,7 @@ npm test
 
 ## Roadmap
 
-- v0.1.0: command surface hardening
+- v0.1.0: command surface hardening (current milestone)
 - v0.2.0: richer types and state
 - v0.3.0: baseline thinking-step parser hardening and Pi command integration
 - v0.4.0: Pi internal bridge validation

@@ -10,6 +10,21 @@ export interface ZergExtensionRegistration {
   patchInstalled: boolean;
 }
 
+type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps';
+type ZergCommandDispatcher = (payload: string) => ZergCommandResult;
+
+interface NormalizedZergCommandInput {
+  topic: string;
+  payload: string;
+}
+
+interface SelectedCommandRegistrar {
+  target: object;
+  registerCommand(name: ZergCommandName, options: StructuralPiCommandOptions): unknown;
+}
+
+const registeredCommandsByTarget = new WeakMap<object, Set<ZergCommandName>>();
+
 export function registerZergSwarmExtension(context: StructuralPiExtensionContext = {}): ZergExtensionRegistration {
   const state = createZergState(sharedZergState);
   const patch = installInternalPatch(context, state);
@@ -18,14 +33,14 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
   for (const name of ZERG_COMMANDS) {
     registerCommand(context, {
       name,
-      description: 'Show pi-zerg-swarm scaffold status and help.',
+      description: 'Show pi-zerg-swarm command-surface status and help.',
       handler,
     });
   }
 
   patch.emit({
     type: 'hook',
-    message: 'pi-zerg-swarm v0.0.0 scaffold registered',
+    message: 'pi-zerg-swarm v0.1.0 command surface registered',
     status: 'done',
   });
 
@@ -37,29 +52,76 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
 }
 
 export function createZergCommandHandler(state: ZergState): (input?: string) => ZergCommandResult {
-  return (input?: string): ZergCommandResult => {
-    const trimmed = input?.trim() ?? '';
-    const args = trimmed.split(/\s+/).filter(Boolean);
-    const topic = args[0] ?? 'help';
-
-    if (topic === 'status') {
-      return { ok: true, output: renderStatusLine(state) };
-    }
-
-    if (topic === 'tree') {
-      return { ok: true, output: renderAgentTree(state) };
-    }
-
-    if (topic === 'steps') {
-      const steps = deriveThinkingSteps(args.slice(1).join(' '));
+  const dispatchers: Record<ZergCommandTopic, ZergCommandDispatcher> = {
+    help: () => ({ ok: true, output: renderHelp(state) }),
+    status: () => ({ ok: true, output: renderStatusLine(state) }),
+    tree: () => ({ ok: true, output: renderAgentTree(state) }),
+    steps: (payload: string) => {
+      const steps = deriveThinkingSteps(payload);
       const output = steps.length
         ? steps.map((step) => `${step.sourceLine}. [${step.status}] ${step.title}`).join('\n')
         : 'No thinking steps detected.';
       return { ok: true, output };
+    },
+  };
+
+  return (input?: string): ZergCommandResult => {
+    const normalized = normalizeZergCommandInput(input);
+
+    if (isZergCommandTopic(normalized.topic)) {
+      return dispatchers[normalized.topic](normalized.payload);
     }
 
-    return { ok: true, output: renderHelp(state) };
+    return {
+      ok: false,
+      output: `Unknown zerg command: ${normalized.topic}\n\n${renderHelp(state)}`,
+    };
   };
+}
+
+function normalizeZergCommandInput(input?: string): NormalizedZergCommandInput {
+  const commandText = (input ?? '').trim();
+
+  if (!commandText) {
+    return { topic: 'help', payload: '' };
+  }
+
+  const routedText = stripOptionalZergInvocation(commandText);
+  const topicMatch = routedText.match(/^(\S+)/);
+
+  if (!topicMatch) {
+    return { topic: 'help', payload: '' };
+  }
+
+  return {
+    topic: topicMatch[1].toLowerCase(),
+    payload: routedText.slice(topicMatch[0].length).trimStart(),
+  };
+}
+
+function stripOptionalZergInvocation(input: string): string {
+  const tokenMatch = input.match(/^(\S+)/);
+
+  if (!tokenMatch) {
+    return '';
+  }
+
+  const token = tokenMatch[1];
+  const slashlessToken = token.startsWith('/') ? token.slice(1) : token;
+
+  if (!isZergInvocationToken(slashlessToken.toLowerCase())) {
+    return input;
+  }
+
+  return input.slice(token.length).trimStart();
+}
+
+function isZergInvocationToken(value: string): value is ZergCommandName {
+  return (ZERG_COMMANDS as readonly string[]).includes(value);
+}
+
+function isZergCommandTopic(value: string): value is ZergCommandTopic {
+  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps';
 }
 
 export function createPiZergCommandHandler(state: ZergState): ZergPiCommandHandler {
@@ -73,27 +135,49 @@ export function createPiZergCommandHandler(state: ZergState): ZergPiCommandHandl
 }
 
 function registerCommand(context: StructuralPiExtensionContext, command: StructuralPiCommand): void {
+  const registrar = selectCommandRegistrar(context);
+
+  if (!registrar) {
+    return;
+  }
+
+  const registeredNames = registeredCommandsByTarget.get(registrar.target) ?? new Set<ZergCommandName>();
+
+  if (registeredNames.has(command.name)) {
+    return;
+  }
+
   const options: StructuralPiCommandOptions = {
     description: command.description,
     handler: command.handler,
   };
 
+  registrar.registerCommand(command.name, options);
+  registeredNames.add(command.name);
+  registeredCommandsByTarget.set(registrar.target, registeredNames);
+}
+
+function selectCommandRegistrar(context: StructuralPiExtensionContext): SelectedCommandRegistrar | undefined {
   if (context.registerCommand) {
-    context.registerCommand(command.name, options);
-    return;
+    return { target: context, registerCommand: context.registerCommand.bind(context) };
   }
 
   if (context.commands?.registerCommand) {
-    context.commands.registerCommand(command.name, options);
-    return;
+    return { target: context.commands, registerCommand: context.commands.registerCommand.bind(context.commands) };
   }
 
   if (context.commands?.register) {
-    context.commands.register(command.name, options);
-    return;
+    return { target: context.commands, registerCommand: context.commands.register.bind(context.commands) };
   }
 
-  context.commandRegistrar?.registerCommand?.(command.name, options);
+  if (context.commandRegistrar?.registerCommand) {
+    return {
+      target: context.commandRegistrar,
+      registerCommand: context.commandRegistrar.registerCommand.bind(context.commandRegistrar),
+    };
+  }
+
+  return undefined;
 }
 
 export default registerZergSwarmExtension;

@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { registerZergSwarmExtension } from '../index.js';
+import { createZergCommandHandler, registerZergSwarmExtension } from '../index.js';
 import { deriveThinkingSteps } from '../parse.js';
 import { renderAgentTree } from '../render.js';
 import type { StructuralPiCommandOptions, ZergState } from '../types.js';
+
+function createCommandSurfaceState(): ZergState {
+  return {
+    agents: {
+      root: { id: 'root', label: 'Root', kind: 'team-leader', status: 'running' },
+    },
+    tasks: {
+      task: { id: 'task', title: 'Implement command surface', status: 'running', ownerAgentId: 'root', updatedAt: '2026-04-30T00:00:00.000Z' },
+    },
+    events: [],
+    mode: { automation: 'manual', interventionEnabled: true },
+  };
+}
 
 test('deriveThinkingSteps parses numbered reasoning steps', () => {
   const steps = deriveThinkingSteps('1. inspect context\n2) implement scaffold');
@@ -48,7 +61,11 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   assert.deepEqual(registrations.map((registration) => registration.name), ['zerg', 'zerg-swarm', 'swarm']);
   assert.ok(registrations.every((registration) => typeof registration.options.handler === 'function'));
 
-  await registrations[0]?.options.handler('status', {
+  const firstHandler = registrations[0]?.options.handler;
+  assert.ok(firstHandler);
+  assert.ok(registrations.every((registration) => registration.options.handler === firstHandler));
+
+  await firstHandler('status', {
     hasUI: true,
     ui: {
       notify(message, type) {
@@ -58,8 +75,82 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v0.0.0 scaffold'));
+  assert.ok(notifications[0]?.message.includes('zerg v0.1.0 command surface'));
   assert.equal(notifications[0]?.type, 'info');
+});
+
+test('registered aliases dispatch status through equivalent handlers', async () => {
+  const registrations: Array<{ name: string; options: StructuralPiCommandOptions }> = [];
+  const notifications: Array<{ message: string; type?: string }> = [];
+
+  registerZergSwarmExtension({
+    registerCommand(name, options) {
+      registrations.push({ name, options });
+    },
+  });
+
+  for (const registration of registrations) {
+    await registration.options.handler('status', {
+      hasUI: true,
+      ui: {
+        notify(message, type) {
+          notifications.push({ message, type });
+        },
+      },
+    });
+  }
+
+  assert.deepEqual(registrations.map((registration) => registration.name), ['zerg', 'zerg-swarm', 'swarm']);
+  assert.equal(notifications.length, 3);
+  assert.equal(new Set(notifications.map((notification) => notification.message)).size, 1);
+  assert.deepEqual(notifications.map((notification) => notification.type), ['info', 'info', 'info']);
+});
+
+test('createZergCommandHandler normalizes help, status, whitespace, case, and aliases', () => {
+  const handler = createZergCommandHandler(createCommandSurfaceState());
+  const helpOutput = handler('').output;
+  const statusOutput = handler('status').output;
+
+  assert.equal(handler('  help  ').output, helpOutput);
+  assert.ok(helpOutput.includes('Commands: /zerg, /zerg-swarm, /swarm'));
+  assert.equal(handler(' STATUS ').output, statusOutput);
+  assert.equal(handler('  /swarm   status ').output, statusOutput);
+  assert.equal(handler('zerg status').output, statusOutput);
+});
+
+test('createZergCommandHandler preserves multiline steps payload', () => {
+  const handler = createZergCommandHandler(createCommandSurfaceState());
+  const result = handler('/zerg steps - [ ] first step\n- [x] second step');
+
+  assert.equal(result.output, '1. [todo] first step\n2. [done] second step');
+});
+
+test('unknown zerg command returns consistent usage for every invocation', () => {
+  const handler = createZergCommandHandler(createCommandSurfaceState());
+  const outputs = ['wat', '/zerg wat', '/zerg-swarm wat', '/swarm wat'].map((input) => handler(input).output);
+
+  assert.equal(new Set(outputs).size, 1);
+
+  for (const output of outputs) {
+    assert.ok(output.startsWith('Unknown zerg command: wat\n\n'));
+    assert.ok(output.includes('/zerg'));
+    assert.ok(output.includes('/zerg-swarm'));
+    assert.ok(output.includes('/swarm'));
+  }
+});
+
+test('registerZergSwarmExtension does not duplicate registrations for the same context', () => {
+  const registrations: Array<{ name: string; options: StructuralPiCommandOptions }> = [];
+  const context = {
+    registerCommand(name: string, options: StructuralPiCommandOptions) {
+      registrations.push({ name, options });
+    },
+  };
+
+  registerZergSwarmExtension(context);
+  registerZergSwarmExtension(context);
+
+  assert.deepEqual(registrations.map((registration) => registration.name), ['zerg', 'zerg-swarm', 'swarm']);
 });
 
 test('renderAgentTree includes nested agents and their tasks', () => {
