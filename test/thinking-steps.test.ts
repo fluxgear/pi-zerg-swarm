@@ -253,7 +253,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.2.0 command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.3.0 command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -266,11 +266,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.2.0 command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.3.0 command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.2.0 command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.3.0 command surface registered');
   } finally {
     registration.dispose();
   }
@@ -411,28 +411,38 @@ test('deriveThinkingSteps gives checkbox status precedence over embedded prefixe
 test('deriveThinkingSteps preserves ordinary hyphenated marked titles', () => {
   const steps = deriveThinkingSteps([
     '- re-run tests',
+    '- done-task cleanup',
     '1. follow-up audit',
+    '1. failed-first attempt',
     '* command-surface check',
+    '* todo-list cleanup',
     '- [ ] follow-up checkbox',
+    '- [ ] done-task checkbox',
     '- [x] command-surface checkbox',
     '- [-] re-run blocked checkbox',
     '- [!] needs-attention checkbox title',
     '2) parse - render handoff',
+    '3. needs-attention-task follow-up',
   ]);
 
   assert.deepEqual(steps.map((step) => step.title), [
     're-run tests',
+    'done-task cleanup',
     'follow-up audit',
+    'failed-first attempt',
     'command-surface check',
+    'todo-list cleanup',
     'follow-up checkbox',
+    'done-task checkbox',
     'command-surface checkbox',
     're-run blocked checkbox',
     'needs-attention checkbox title',
     'parse - render handoff',
+    'needs-attention-task follow-up',
   ]);
-  assert.deepEqual(steps.map((step) => step.status), ['unknown', 'unknown', 'unknown', 'todo', 'done', 'blocked', 'blocked', 'unknown']);
-  assert.deepEqual(steps.map((step) => step.id), ['step-1', 'step-2', 'step-3', 'step-4', 'step-5', 'step-6', 'step-7', 'step-8']);
-  assert.deepEqual(steps.map((step) => step.sourceLine), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(steps.map((step) => step.status), ['unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'todo', 'todo', 'done', 'blocked', 'blocked', 'unknown', 'unknown']);
+  assert.deepEqual(steps.map((step) => step.id), ['step-1', 'step-2', 'step-3', 'step-4', 'step-5', 'step-6', 'step-7', 'step-8', 'step-9', 'step-10', 'step-11', 'step-12', 'step-13']);
+  assert.deepEqual(steps.map((step) => step.sourceLine), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
 });
 
 test('deriveThinkingSteps skips malformed and ambiguous input deterministically', () => {
@@ -446,11 +456,12 @@ test('deriveThinkingSteps skips malformed and ambiguous input deterministically'
     'queued: unsupported status prefix',
     'done => unsupported separator',
     '1. queued: unsupported numbered prefix',
+    'needs-attention-task',
     '* useful item',
   ];
 
   assert.deepEqual(deriveThinkingSteps(input), [
-    { id: 'step-10', title: 'useful item', status: 'unknown', sourceLine: 10 },
+    { id: 'step-11', title: 'useful item', status: 'unknown', sourceLine: 11 },
   ]);
 });
 
@@ -481,7 +492,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v0.2.0 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v0.3.0 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 

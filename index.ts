@@ -63,7 +63,7 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
 
   patch.emit({
     type: 'hook',
-    message: 'pi-zerg-swarm v0.2.0 command surface registered',
+    message: 'pi-zerg-swarm v0.3.0 command surface registered',
     status: 'done',
   });
 

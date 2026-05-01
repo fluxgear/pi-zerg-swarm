@@ -3,7 +3,7 @@ import type { ThinkingStep, ThinkingStepStatus } from './types.js';
 const NUMBERED_STEP = /^\s*\d+[.)]\s+(.+)$/;
 const BULLET_STEP = /^\s*[-*]\s+(.+)$/;
 const CHECKBOX_PREFIX = /^\[([^\]]*)\]\s*(.*)$/;
-const STATUS_PREFIX = /^(todo|running|blocked|done|failed|needs[- ]attention)\s*[:：-]\s*(.+)$/i;
+const STATUS_PREFIX = /^(todo|running|blocked|done|failed|needs[- ]attention)(?:\s*[:：]\s*|\s+-\s+)(.+)$/i;
 const PREFIX_LIKE = /^([a-z][a-z -]*)\s*(?:[:：]|=>|=)\s*(.*)$/i;
 
 export function deriveThinkingSteps(input: string | readonly string[] | null | undefined): ThinkingStep[] {

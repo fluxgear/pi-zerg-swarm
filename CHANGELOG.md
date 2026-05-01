@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to semantic versioning after the bootstrap line is established.
 
+## [0.3.0] - 2026-05-01
+
+### Added
+
+- Added deterministic thinking-step derivation with source-line IDs, LF/CRLF parity, explicit status aliases, checkbox precedence, malformed-input skipping, and `/zerg steps` integration coverage.
+- Expanded regression coverage for ordinary hyphenated bullet, numbered, star, and checkbox titles.
+
+### Changed
+
+- Promoted user-facing command/status/help version strings to v0.3.0 for the parse/thinking-step milestone.
+
+### Fixed
+
+- Required known status prefixes to use `:`/`：` or a whitespace-delimited hyphen separator, preserving titles such as `done-task`, `failed-first`, `todo-list`, and `needs-attention-task` instead of truncating them.
+
 ## [0.2.0] - 2026-05-01
 
 ### Added
