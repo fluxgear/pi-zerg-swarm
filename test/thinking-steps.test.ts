@@ -83,6 +83,60 @@ test('snapshotZergState returns independent copies', () => {
   assert.deepEqual(state.teams.team?.memberAgentIds, ['root']);
 });
 
+test('snapshot and read helpers deep clone nested metadata and extensions', () => {
+  const state = createZergState({
+    metadata: {
+      createdAt: '1970-01-01T00:00:00.000Z',
+      updatedAt: '1970-01-01T00:00:00.000Z',
+      resetCount: 0,
+      extensions: {
+        preferences: { flags: ['state-original'] },
+      },
+    },
+    extensions: {
+      runtime: { labels: ['extension-original'] },
+    },
+    agents: {
+      root: {
+        id: 'root',
+        label: 'Root',
+        kind: 'team-leader',
+        status: 'running',
+        metadata: {
+          profile: { tags: ['metadata-original'] },
+        },
+        extensions: {
+          config: { modes: ['extension-original'] },
+        },
+      },
+    },
+  });
+
+  const snapshot = snapshotZergState(state);
+  (snapshot.metadata.extensions?.preferences as { flags: string[] }).flags.push('state-mutated');
+  (snapshot.extensions?.runtime as { labels: string[] }).labels.push('extension-mutated');
+  (snapshot.agents.root?.metadata?.profile as { tags: string[] }).tags.push('metadata-mutated');
+  (snapshot.agents.root?.extensions?.config as { modes: string[] }).modes.push('extension-mutated');
+
+  assert.deepEqual((state.metadata.extensions?.preferences as { flags: string[] }).flags, ['state-original']);
+  assert.deepEqual((state.extensions?.runtime as { labels: string[] }).labels, ['extension-original']);
+  assert.deepEqual((state.agents.root?.metadata?.profile as { tags: string[] }).tags, ['metadata-original']);
+  assert.deepEqual((state.agents.root?.extensions?.config as { modes: string[] }).modes, ['extension-original']);
+
+  const container = createZergStateContainer(state);
+  const readState = container.read();
+  (readState.metadata.extensions?.preferences as { flags: string[] }).flags.push('read-mutated');
+  (readState.extensions?.runtime as { labels: string[] }).labels.push('read-mutated');
+  (readState.agents.root?.metadata?.profile as { tags: string[] }).tags.push('read-mutated');
+  (readState.agents.root?.extensions?.config as { modes: string[] }).modes.push('read-mutated');
+
+  const rereadState = container.read();
+  assert.deepEqual((rereadState.metadata.extensions?.preferences as { flags: string[] }).flags, ['state-original']);
+  assert.deepEqual((rereadState.extensions?.runtime as { labels: string[] }).labels, ['extension-original']);
+  assert.deepEqual((rereadState.agents.root?.metadata?.profile as { tags: string[] }).tags, ['metadata-original']);
+  assert.deepEqual((rereadState.agents.root?.extensions?.config as { modes: string[] }).modes, ['extension-original']);
+});
+
 test('state update helpers are immutable and deterministic', () => {
   const initial = createZergState();
   const withAgent = upsertAgent(initial, { id: 'root', label: 'Root', kind: 'team-leader', status: 'running' });
@@ -127,20 +181,25 @@ test('shared state replacement and reads are snapshot isolated', () => {
   replaceSharedZergState();
 });
 
-test('installInternalPatch emits through state API compatibility and truncates events', () => {
+test('installInternalPatch emits monotonic IDs through truncation', () => {
   const state = createZergState();
   const patch = installInternalPatch({}, state, {
     maxEvents: 2,
     now: () => new Date('2026-04-30T00:00:00.000Z'),
   });
 
-  patch.emit({ type: 'hook', message: 'one' });
-  patch.emit({ type: 'hook', message: 'two' });
-  patch.emit({ type: 'hook', message: 'three' });
+  const emitted = [
+    patch.emit({ type: 'hook', message: 'one' }),
+    patch.emit({ type: 'hook', message: 'two' }),
+    patch.emit({ type: 'hook', message: 'three' }),
+    patch.emit({ type: 'hook', message: 'four' }),
+  ];
 
-  assert.deepEqual(state.events.map((event) => event.message), ['two', 'three']);
+  assert.deepEqual(emitted.map((event) => event.id), ['event-1', 'event-2', 'event-3', 'event-4']);
+  assert.deepEqual(state.events.map((event) => event.id), ['event-3', 'event-4']);
+  assert.deepEqual(state.events.map((event) => event.message), ['three', 'four']);
   assert.deepEqual(state.events.map((event) => event.createdAt), ['2026-04-30T00:00:00.000Z', '2026-04-30T00:00:00.000Z']);
-  assert.equal(state.revision, 3);
+  assert.equal(state.revision, 4);
 
   patch.dispose();
   assert.throws(() => patch.emit({ type: 'hook', message: 'after dispose' }), /Cannot emit/);

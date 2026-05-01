@@ -258,7 +258,28 @@ function cloneMetadata(metadata: Partial<ZergState['metadata']> = {}): ZergState
 }
 
 function cloneExtensionFields(fields: ZergExtensionFields = {}): ZergExtensionFields {
-  return { ...fields };
+  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, cloneExtensionValue(value)]));
+}
+
+function cloneExtensionValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(cloneExtensionValue);
+  }
+
+  if (isPlainRecord(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, cloneExtensionValue(nested)]));
+  }
+
+  return value;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function cloneArray(values: string[] | undefined): string[] | undefined {
