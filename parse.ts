@@ -1,23 +1,24 @@
 import type { ThinkingStep, ThinkingStepStatus } from './types.js';
 
 const NUMBERED_STEP = /^\s*\d+[.)]\s+(.+)$/;
-const BULLET_STEP = /^\s*[-*]\s+(?:\[( |x|X|-|!)\]\s*)?(.+)$/;
-const STATUS_PREFIX = /^(todo|running|blocked|done|failed|needs-attention|needs attention)\s*[:：-]\s*(.+)$/i;
+const BULLET_STEP = /^\s*[-*]\s+(.+)$/;
+const CHECKBOX_PREFIX = /^\[([^\]]*)\]\s*(.*)$/;
+const STATUS_PREFIX = /^(todo|running|blocked|done|failed|needs[- ]attention)\s*[:：-]\s*(.+)$/i;
+const PREFIX_LIKE = /^([a-z][a-z -]*)\s*(?:[:：]|=>|=)\s*(.*)$/i;
 
 export function deriveThinkingSteps(input: string | readonly string[] | null | undefined): ThinkingStep[] {
-  const lines = Array.isArray(input) ? input : String(input ?? '').split(/\r?\n/);
-
-  return lines.flatMap((line, index) => {
+  return normalizeThinkingInput(input).flatMap((line, index) => {
     const parsed = parseThinkingLine(line);
     if (!parsed) {
       return [];
     }
 
+    const sourceLine = index + 1;
     return [{
-      id: `step-${index + 1}`,
+      id: `step-${sourceLine}`,
       title: parsed.title,
       status: parsed.status,
-      sourceLine: index + 1,
+      sourceLine,
     }];
   });
 }
@@ -30,24 +31,50 @@ export function parseThinkingLine(line: string): { title: string; status: Thinki
 
   const numbered = trimmed.match(NUMBERED_STEP);
   if (numbered?.[1]) {
-    return withStatus(numbered[1]);
+    return parseMarkedValue(numbered[1]);
   }
 
   const bullet = trimmed.match(BULLET_STEP);
-  if (bullet?.[2]) {
-    const checkboxStatus = statusFromCheckbox(bullet[1]);
-    const parsed = withStatus(bullet[2]);
-    return {
-      title: parsed.title,
-      status: checkboxStatus ?? parsed.status,
-    };
+  if (bullet?.[1]) {
+    return parseBulletValue(bullet[1]);
   }
 
   return withExplicitPrefix(trimmed);
 }
 
-function withStatus(value: string): { title: string; status: ThinkingStepStatus } {
-  return withExplicitPrefix(value) ?? { title: value.trim(), status: 'unknown' };
+function normalizeThinkingInput(input: string | readonly string[] | null | undefined): readonly string[] {
+  return Array.isArray(input) ? input : String(input ?? '').split(/\r?\n/);
+}
+
+function parseBulletValue(value: string): { title: string; status: ThinkingStepStatus } | null {
+  const checkbox = value.match(CHECKBOX_PREFIX);
+  if (!checkbox) {
+    return parseMarkedValue(value);
+  }
+
+  const checkboxStatus = statusFromCheckbox(checkbox[1]);
+  if (!checkboxStatus || !checkbox[2]?.trim()) {
+    return null;
+  }
+
+  const parsed = parseMarkedValue(checkbox[2]);
+  if (!parsed) {
+    return null;
+  }
+
+  return {
+    title: parsed.title,
+    status: checkboxStatus,
+  };
+}
+
+function parseMarkedValue(value: string): { title: string; status: ThinkingStepStatus } | null {
+  const trimmed = value.trim();
+  if (!trimmed || hasUnknownStatusPrefix(trimmed)) {
+    return null;
+  }
+
+  return withExplicitPrefix(trimmed) ?? { title: trimmed, status: 'unknown' };
 }
 
 function withExplicitPrefix(value: string): { title: string; status: ThinkingStepStatus } | null {
@@ -60,6 +87,11 @@ function withExplicitPrefix(value: string): { title: string; status: ThinkingSte
     title: match[2].trim(),
     status: normalizeStatus(match[1]),
   };
+}
+
+function hasUnknownStatusPrefix(value: string): boolean {
+  const match = value.match(PREFIX_LIKE);
+  return Boolean(match && !STATUS_PREFIX.test(value));
 }
 
 function statusFromCheckbox(value: string | undefined): ThinkingStepStatus | undefined {
@@ -78,7 +110,7 @@ function statusFromCheckbox(value: string | undefined): ThinkingStepStatus | und
 }
 
 function normalizeStatus(value: string): ThinkingStepStatus {
-  const status = value.toLowerCase().replace(' ', '-');
+  const status = value.toLowerCase().trim().replace(/\s+/g, '-');
   if (status === 'needs-attention') {
     return 'blocked';
   }

@@ -349,33 +349,109 @@ test('shared team tree helpers and readers return clones', () => {
   }
 });
 
-test('deriveThinkingSteps parses numbered reasoning steps', () => {
+test('deriveThinkingSteps parses numbered reasoning steps with source-line IDs', () => {
   const steps = deriveThinkingSteps('1. inspect context\n2) implement scaffold');
 
   assert.deepEqual(steps.map((step) => step.title), ['inspect context', 'implement scaffold']);
   assert.deepEqual(steps.map((step) => step.status), ['unknown', 'unknown']);
-  assert.equal(steps[0]?.sourceLine, 1);
+  assert.deepEqual(steps.map((step) => step.id), ['step-1', 'step-2']);
+  assert.deepEqual(steps.map((step) => step.sourceLine), [1, 2]);
 });
 
-test('deriveThinkingSteps parses bullets and checkboxes', () => {
-  const steps = deriveThinkingSteps('- [ ] write types\n- [x] build passes\n- [-] blocked follow-up');
+test('deriveThinkingSteps output is deterministic for repeated identical input', () => {
+  const input = 'plain prose\n1. inspect context\n- [x] done item\nneeds attention: blocked item';
+  const first = deriveThinkingSteps(input);
+  const second = deriveThinkingSteps(input);
+  const third = deriveThinkingSteps(input);
 
-  assert.deepEqual(steps.map((step) => step.status), ['todo', 'done', 'blocked']);
-  assert.deepEqual(steps.map((step) => step.title), ['write types', 'build passes', 'blocked follow-up']);
+  assert.deepEqual(second, first);
+  assert.deepEqual(third, first);
+  assert.deepEqual(first.map((step) => step.id), ['step-2', 'step-3', 'step-4']);
 });
 
-test('deriveThinkingSteps ignores empty and unmarked noise lines', () => {
-  const steps = deriveThinkingSteps('\nplain prose\n- useful item\n   \nnotes only');
+test('deriveThinkingSteps preserves source-line gaps after skipped lines', () => {
+  const steps = deriveThinkingSteps('intro only\n1. first parsed\n\nqueued: unsupported prefix\n- second parsed');
 
-  assert.equal(steps.length, 1);
-  assert.equal(steps[0]?.title, 'useful item');
+  assert.deepEqual(steps, [
+    { id: 'step-2', title: 'first parsed', status: 'unknown', sourceLine: 2 },
+    { id: 'step-5', title: 'second parsed', status: 'unknown', sourceLine: 5 },
+  ]);
 });
 
-test('deriveThinkingSteps infers status prefixes', () => {
-  const steps = deriveThinkingSteps(['done: context loaded', 'running - validate scaffold', 'blocked: waiting on lock']);
+test('deriveThinkingSteps treats arrays strings LF and CRLF consistently', () => {
+  const lines = ['1. first step', '- [x] second step', 'needs-attention: third step'];
+  const fromArray = deriveThinkingSteps(lines);
 
-  assert.deepEqual(steps.map((step) => step.status), ['done', 'running', 'blocked']);
-  assert.deepEqual(steps.map((step) => step.title), ['context loaded', 'validate scaffold', 'waiting on lock']);
+  assert.deepEqual(deriveThinkingSteps(lines.join('\n')), fromArray);
+  assert.deepEqual(deriveThinkingSteps(lines.join('\r\n')), fromArray);
+  assert.deepEqual(fromArray.map((step) => step.status), ['unknown', 'done', 'blocked']);
+});
+
+test('deriveThinkingSteps parses prefixed numbered and bullet items', () => {
+  const steps = deriveThinkingSteps('1. todo: inspect context\n2) running - implement parser\n- done: write tests\n* failed: document bug');
+
+  assert.deepEqual(steps.map((step) => step.title), ['inspect context', 'implement parser', 'write tests', 'document bug']);
+  assert.deepEqual(steps.map((step) => step.status), ['todo', 'running', 'done', 'failed']);
+});
+
+test('deriveThinkingSteps normalizes uppercase status aliases', () => {
+  const steps = deriveThinkingSteps(['DONE: context loaded', 'Needs Attention: reviewer blocked', 'NEEDS-ATTENTION - audit blocked']);
+
+  assert.deepEqual(steps.map((step) => step.status), ['done', 'blocked', 'blocked']);
+  assert.deepEqual(steps.map((step) => step.title), ['context loaded', 'reviewer blocked', 'audit blocked']);
+});
+
+test('deriveThinkingSteps gives checkbox status precedence over embedded prefixes', () => {
+  const steps = deriveThinkingSteps('- [ ] done: still todo\n- [x] blocked: already done\n- [!] running: still blocked\n- [-] failed: also blocked');
+
+  assert.deepEqual(steps.map((step) => step.status), ['todo', 'done', 'blocked', 'blocked']);
+  assert.deepEqual(steps.map((step) => step.title), ['still todo', 'already done', 'still blocked', 'also blocked']);
+});
+
+test('deriveThinkingSteps preserves ordinary hyphenated marked titles', () => {
+  const steps = deriveThinkingSteps([
+    '- re-run tests',
+    '1. follow-up audit',
+    '* command-surface check',
+    '- [ ] follow-up checkbox',
+    '- [x] command-surface checkbox',
+    '- [-] re-run blocked checkbox',
+    '- [!] needs-attention checkbox title',
+    '2) parse - render handoff',
+  ]);
+
+  assert.deepEqual(steps.map((step) => step.title), [
+    're-run tests',
+    'follow-up audit',
+    'command-surface check',
+    'follow-up checkbox',
+    'command-surface checkbox',
+    're-run blocked checkbox',
+    'needs-attention checkbox title',
+    'parse - render handoff',
+  ]);
+  assert.deepEqual(steps.map((step) => step.status), ['unknown', 'unknown', 'unknown', 'todo', 'done', 'blocked', 'blocked', 'unknown']);
+  assert.deepEqual(steps.map((step) => step.id), ['step-1', 'step-2', 'step-3', 'step-4', 'step-5', 'step-6', 'step-7', 'step-8']);
+  assert.deepEqual(steps.map((step) => step.sourceLine), [1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
+test('deriveThinkingSteps skips malformed and ambiguous input deterministically', () => {
+  const input = [
+    '',
+    'plain prose',
+    '- ',
+    '+ unsupported bullet',
+    '- [y] unsupported checkbox',
+    '- [] empty checkbox',
+    'queued: unsupported status prefix',
+    'done => unsupported separator',
+    '1. queued: unsupported numbered prefix',
+    '* useful item',
+  ];
+
+  assert.deepEqual(deriveThinkingSteps(input), [
+    { id: 'step-10', title: 'useful item', status: 'unknown', sourceLine: 10 },
+  ]);
 });
 
 test('registerZergSwarmExtension uses Pi command registration and notifies command output', async () => {
@@ -448,11 +524,11 @@ test('createZergCommandHandler normalizes help, status, whitespace, case, and al
   assert.equal(handler('zerg status').output, statusOutput);
 });
 
-test('createZergCommandHandler preserves multiline steps payload', () => {
+test('createZergCommandHandler preserves multiline steps payload and skipped source lines', () => {
   const handler = createZergCommandHandler(createCommandSurfaceState());
-  const result = handler('/zerg steps - [ ] first step\n- [x] second step');
+  const result = handler('/zerg steps plain prose\n- [ ] first step\nqueued: unsupported prefix\n- [x] second step');
 
-  assert.equal(result.output, '1. [todo] first step\n2. [done] second step');
+  assert.equal(result.output, '2. [todo] first step\n4. [done] second step');
 });
 
 test('unknown zerg command returns consistent usage for every invocation', () => {

@@ -1,6 +1,6 @@
 {
   "name": "pi-zerg-swarm",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Bootstrap scaffold for a Pi coding-agent extension that will coordinate high-capacity agentic teams.",
   "type": "module",
   "license": "MIT",
