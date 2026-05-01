@@ -3,10 +3,29 @@ export type ZergCommandName = (typeof ZERG_COMMANDS)[number];
 export const ZERG_COMMAND_INVOCATIONS = ['/zerg', '/zerg-swarm', '/swarm'] as const;
 export type ZergCommandInvocation = (typeof ZERG_COMMAND_INVOCATIONS)[number];
 export type AgentKind = 'subagent' | 'teammate' | 'team-leader';
+export type TeamKind = 'team' | 'squad' | 'worktree';
 export type AgentStatus = 'idle' | 'running' | 'blocked' | 'needs-attention' | 'done' | 'failed';
 export type TaskStatus = AgentStatus;
 export type AutomationMode = 'manual' | 'assisted' | 'automatic';
+export type ZergMode = AutomationMode;
 export type ThinkingStepStatus = 'todo' | 'running' | 'blocked' | 'done' | 'failed' | 'unknown';
+export type ZergContextKind = 'command' | 'extension' | 'team' | 'agent' | 'task';
+export type ZergTreeNodeKind = 'agent' | 'task' | 'team';
+export type ZergLifecycleState = 'initializing' | 'ready' | 'resetting' | 'disposed';
+export const ZERG_STATE_SCHEMA_VERSION = '0.2.0' as const;
+export type ZergStateSchemaVersion = typeof ZERG_STATE_SCHEMA_VERSION;
+
+export interface ZergExtensionFields {
+  [key: string]: unknown;
+}
+
+export interface ZergContext {
+  id: string;
+  kind: ZergContextKind;
+  title?: string;
+  source?: string;
+  metadata?: ZergExtensionFields;
+}
 
 export interface AgentIdentity {
   id: string;
@@ -14,6 +33,24 @@ export interface AgentIdentity {
   kind: AgentKind;
   status: AgentStatus;
   parentId?: string;
+  teamId?: string;
+  childIds?: string[];
+  contextId?: string;
+  metadata?: ZergExtensionFields;
+  extensions?: ZergExtensionFields;
+}
+
+export interface TeamIdentity {
+  id: string;
+  label: string;
+  kind: TeamKind;
+  status: AgentStatus;
+  leaderAgentId?: string;
+  memberAgentIds: string[];
+  parentTeamId?: string;
+  taskIds?: string[];
+  metadata?: ZergExtensionFields;
+  extensions?: ZergExtensionFields;
 }
 
 export interface TaskRecord {
@@ -21,31 +58,86 @@ export interface TaskRecord {
   title: string;
   status: TaskStatus;
   ownerAgentId?: string;
+  teamId?: string;
+  parentId?: string;
   blockedBy?: string[];
+  contextId?: string;
   updatedAt: string;
+  metadata?: ZergExtensionFields;
+  extensions?: ZergExtensionFields;
 }
 
 export interface HookLifecycleEvent {
   id: string;
-  type: 'agent' | 'task' | 'hook' | 'permission' | 'mode';
+  type: 'agent' | 'task' | 'team' | 'tree' | 'hook' | 'permission' | 'mode' | 'state';
   message: string;
   status?: AgentStatus | TaskStatus | ThinkingStepStatus;
   agentId?: string;
   taskId?: string;
+  teamId?: string;
+  treeNodeId?: string;
+  revision?: number;
   createdAt: string;
 }
 
 export interface PermissionModeState {
   automation: AutomationMode;
   interventionEnabled: boolean;
+  contextId?: string;
+}
+
+export interface ZergTreeNode {
+  id: string;
+  kind: ZergTreeNodeKind;
+  label: string;
+  status?: AgentStatus | TaskStatus;
+  refId?: string;
+  parentId?: string;
+  childIds: string[];
+  ownerAgentId?: string;
+  teamId?: string;
+  metadata?: ZergExtensionFields;
+  extensions?: ZergExtensionFields;
+}
+
+export interface ZergStateMetadata {
+  createdAt: string;
+  updatedAt: string;
+  resetCount: number;
+  source?: string;
+  labels?: Record<string, string>;
+  extensions?: ZergExtensionFields;
 }
 
 export interface ZergState {
+  schemaVersion: ZergStateSchemaVersion;
+  lifecycle: ZergLifecycleState;
+  revision: number;
+  metadata: ZergStateMetadata;
   agents: Record<string, AgentIdentity>;
   tasks: Record<string, TaskRecord>;
+  teams: Record<string, TeamIdentity>;
+  tree: Record<string, ZergTreeNode>;
   events: HookLifecycleEvent[];
   selectedNodeId?: string;
   mode: PermissionModeState;
+  context?: ZergContext;
+  extensions: ZergExtensionFields;
+}
+
+export interface ZergStateUpdateOptions {
+  lifecycle?: ZergLifecycleState;
+  updatedAt?: string;
+  preserveRevision?: boolean;
+}
+
+export type ZergStatePatch = Partial<ZergState> | ((state: ZergState) => Partial<ZergState> | ZergState);
+
+export interface ZergStateContainer {
+  read(): ZergState;
+  snapshot(): ZergState;
+  replace(nextState?: Partial<ZergState>): ZergState;
+  update(patch: ZergStatePatch, options?: ZergStateUpdateOptions): ZergState;
 }
 
 export interface ThinkingStep {
@@ -53,6 +145,14 @@ export interface ThinkingStep {
   title: string;
   status: ThinkingStepStatus;
   sourceLine: number;
+}
+
+export type ZergThinkingStep = ThinkingStep;
+
+export interface ZergThinkingContext {
+  mode: ZergMode;
+  steps: ThinkingStep[];
+  context?: ZergContext;
 }
 
 export interface ZergCommandResult {

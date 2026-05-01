@@ -2,7 +2,7 @@
 
 `pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
 
-> v0.1.1 status: Session B audit bugfix patch on the command-surface milestone. Slash-free Pi command registration, `/zerg` aliases, scaffold help/status/tree output, baseline thinking-step parsing, text renderers, README validation-scope wording, and registration disposal cleanup are present; real subagent spawning, team loops, task queues, live overlays, and intervention controls are planned but not implemented yet.
+> v0.2.0 status: types/state milestone complete on top of the command-surface scaffold. Slash-free Pi command registration, `/zerg` aliases, scaffold help/status/tree output, baseline thinking-step parsing, text renderers, deterministic state schema metadata, snapshot-safe state container APIs, team/tree helpers, and registration disposal cleanup are present; real subagent spawning, team loops, task queues, live overlays, and intervention controls are planned but not implemented yet.
 
 ## Commands
 
@@ -10,7 +10,7 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v0.1.0 these commands display scaffold help, status, tree, or thinking-step parser output through Pi command handlers.
+At v0.2.0 these commands display scaffold help, status, tree, or thinking-step parser output through Pi command handlers backed by snapshot-safe state helpers.
 
 ## Architecture
 
@@ -65,12 +65,12 @@ npm run build
 npm test
 ```
 
-`npm run build` performs strict TypeScript no-emit checking. `npm test` runs the parser plus v0.1.0 command-surface and render tests with Node's built-in test runner and `tsx`.
+`npm run build` performs strict TypeScript no-emit checking. `npm test` runs the parser plus command-surface, v0.2.0 state/container, registration snapshot, and render tests with Node's built-in test runner and `tsx`.
 
 ## Roadmap
 
-- v0.1.0: command surface hardening (current milestone)
-- v0.2.0: richer types and state
+- v0.1.0: command surface hardening (completed)
+- v0.2.0: richer types and state (current release)
 - v0.3.0: baseline thinking-step parser hardening and Pi command integration
 - v0.4.0: Pi internal bridge validation
 - v0.5.0: render and tree visibility

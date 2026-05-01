@@ -1,12 +1,19 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
 import { renderAgentTree, renderHelp, renderStatusLine } from './render.js';
-import { createZergState, sharedZergState } from './state.js';
+import { createZergStateContainer, readSharedZergState, snapshotZergState } from './state.js';
 import { ZERG_COMMANDS, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type ZergCommandName, type ZergCommandResult, type ZergPiCommandHandler, type ZergState } from './types.js';
 
 export interface ZergExtensionRegistration {
   commands: ZergCommandName[];
-  state: ZergState;
+  /**
+   * Snapshot of extension state at access time.
+   *
+   * Treat this as a read-only view: mutating the returned object does not update
+   * live extension or shared state. Use state helpers or ZergStateContainer
+   * read/update/replace APIs as the write channel.
+   */
+  readonly state: ZergState;
   patchInstalled: boolean;
   dispose(): void;
 }
@@ -37,9 +44,9 @@ interface DisposableRegistration {
 const registeredCommandsByTarget = new WeakMap<object, Set<ZergCommandName>>();
 
 export function registerZergSwarmExtension(context: StructuralPiExtensionContext = {}): ZergExtensionRegistration {
-  const state = createZergState(sharedZergState);
-  const patch = installInternalPatch(context, state);
-  const handler = createPiZergCommandHandler(state);
+  const stateContainer = createZergStateContainer(readSharedZergState());
+  const patch = installInternalPatch(context, stateContainer);
+  const handler = createPiZergCommandHandler(() => stateContainer.snapshot());
   const commandDisposers: RegisteredCommandDisposer[] = [];
 
   for (const name of ZERG_COMMANDS) {
@@ -56,7 +63,7 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
 
   patch.emit({
     type: 'hook',
-    message: 'pi-zerg-swarm v0.1.1 command surface registered',
+    message: 'pi-zerg-swarm v0.2.0 command surface registered',
     status: 'done',
   });
 
@@ -64,7 +71,9 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
 
   return {
     commands: [...ZERG_COMMANDS],
-    state,
+    get state() {
+      return stateContainer.snapshot();
+    },
     patchInstalled: patch.installed,
     dispose() {
       if (disposed) {
@@ -97,11 +106,11 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
   };
 }
 
-export function createZergCommandHandler(state: ZergState): (input?: string) => ZergCommandResult {
+export function createZergCommandHandler(stateOrReader: ZergState | (() => ZergState)): (input?: string) => ZergCommandResult {
   const dispatchers: Record<ZergCommandTopic, ZergCommandDispatcher> = {
-    help: () => ({ ok: true, output: renderHelp(state) }),
-    status: () => ({ ok: true, output: renderStatusLine(state) }),
-    tree: () => ({ ok: true, output: renderAgentTree(state) }),
+    help: () => ({ ok: true, output: renderHelp(resolveZergStateSnapshot(stateOrReader)) }),
+    status: () => ({ ok: true, output: renderStatusLine(resolveZergStateSnapshot(stateOrReader)) }),
+    tree: () => ({ ok: true, output: renderAgentTree(resolveZergStateSnapshot(stateOrReader)) }),
     steps: (payload: string) => {
       const steps = deriveThinkingSteps(payload);
       const output = steps.length
@@ -120,7 +129,7 @@ export function createZergCommandHandler(state: ZergState): (input?: string) => 
 
     return {
       ok: false,
-      output: `Unknown zerg command: ${normalized.topic}\n\n${renderHelp(state)}`,
+      output: `Unknown zerg command: ${normalized.topic}\n\n${renderHelp(resolveZergStateSnapshot(stateOrReader))}`,
     };
   };
 }
@@ -170,14 +179,19 @@ function isZergCommandTopic(value: string): value is ZergCommandTopic {
   return value === 'help' || value === 'status' || value === 'tree' || value === 'steps';
 }
 
-export function createPiZergCommandHandler(state: ZergState): ZergPiCommandHandler {
-  const scaffoldHandler = createZergCommandHandler(state);
+export function createPiZergCommandHandler(stateOrReader: ZergState | (() => ZergState)): ZergPiCommandHandler {
+  const scaffoldHandler = createZergCommandHandler(stateOrReader);
 
   return async (input: string, context: StructuralPiCommandContext): Promise<void> => {
     const result = await scaffoldHandler(input);
     const output = typeof result === 'string' ? result : result.output;
     context.ui?.notify?.(output, 'info');
   };
+}
+
+function resolveZergStateSnapshot(stateOrReader: ZergState | (() => ZergState)): ZergState {
+  const state = typeof stateOrReader === 'function' ? stateOrReader() : stateOrReader;
+  return snapshotZergState(state);
 }
 
 function registerCommand(context: StructuralPiExtensionContext, command: StructuralPiCommand): RegisteredCommandDisposer | undefined {

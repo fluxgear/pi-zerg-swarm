@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to semantic versioning after the bootstrap line is established.
 
+## [0.2.0] - 2026-05-01
+
+### Added
+
+- Added v0.2.0 state schema metadata, lifecycle/revision guard fields, team/tree/context/thinking contracts, and deterministic state container APIs.
+- Added focused regression coverage for shared state snapshots, container read/update/replace flows, team/tree helpers, registration state snapshots, and type fixture surfaces.
+
+### Changed
+
+- Promoted package metadata and public command/status/help version strings to v0.2.0 for the completed types/state milestone.
+- Routed extension registration and internal patch event writes through snapshot-safe state container helpers.
+
 ## [0.1.1] - 2026-05-01
 
 ### Fixed
