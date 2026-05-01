@@ -11,7 +11,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const tasks = Object.values(state.tasks);
   const running = agents.filter((agent) => agent.status === 'running').length;
   const blocked = [...agents, ...tasks].filter((item) => item.status === 'blocked' || item.status === 'needs-attention').length;
-  return fit(`zerg v0.1.0 command surface | agents ${agents.length} (${running} running) | tasks ${tasks.length} | blocked ${blocked} | mode ${state.mode.automation}`, options.width);
+  return fit(`zerg v0.1.1 command surface | agents ${agents.length} (${running} running) | tasks ${tasks.length} | blocked ${blocked} | mode ${state.mode.automation}`, options.width);
 }
 
 export function renderAgentTree(state: ZergState, options: RenderOptions = {}): string {
@@ -84,7 +84,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v0.1.0 command-surface scaffold',
+    'pi-zerg-swarm v0.1.1 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',

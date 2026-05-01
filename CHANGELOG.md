@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to semantic versioning after the bootstrap line is established.
 
+## [0.1.1] - 2026-05-01
+
+### Fixed
+
+- Corrected README validation-scope wording so `npm test` is documented as covering parser, command-surface, and render behavior.
+- Added command-registration disposal cleanup for disposable Pi command hosts, including idempotent dispose behavior and clean re-registration after dispose.
+- Released owned internal patch context state during extension disposal to keep repeated registration lifecycles isolated.
+
+### Changed
+
+- Expanded tests for duplicate-registration disposal lifecycle and nested tree rendering; current validation covers 12 Node tests.
+- Updated package and user-facing status/help version strings for the v0.1.1 Session B audit bugfix patch.
+
 ## [0.1.0] - 2026-04-30
 
 ### Added

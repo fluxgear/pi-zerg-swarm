@@ -8,6 +8,7 @@ export interface ZergExtensionRegistration {
   commands: ZergCommandName[];
   state: ZergState;
   patchInstalled: boolean;
+  dispose(): void;
 }
 
 type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps';
@@ -23,31 +24,76 @@ interface SelectedCommandRegistrar {
   registerCommand(name: ZergCommandName, options: StructuralPiCommandOptions): unknown;
 }
 
+interface RegisteredCommandDisposer {
+  target: object;
+  name: ZergCommandName;
+  dispose(): void;
+}
+
+interface DisposableRegistration {
+  dispose(): void;
+}
+
 const registeredCommandsByTarget = new WeakMap<object, Set<ZergCommandName>>();
 
 export function registerZergSwarmExtension(context: StructuralPiExtensionContext = {}): ZergExtensionRegistration {
   const state = createZergState(sharedZergState);
   const patch = installInternalPatch(context, state);
   const handler = createPiZergCommandHandler(state);
+  const commandDisposers: RegisteredCommandDisposer[] = [];
 
   for (const name of ZERG_COMMANDS) {
-    registerCommand(context, {
+    const commandDisposer = registerCommand(context, {
       name,
       description: 'Show pi-zerg-swarm command-surface status and help.',
       handler,
     });
+
+    if (commandDisposer) {
+      commandDisposers.push(commandDisposer);
+    }
   }
 
   patch.emit({
     type: 'hook',
-    message: 'pi-zerg-swarm v0.1.0 command surface registered',
+    message: 'pi-zerg-swarm v0.1.1 command surface registered',
     status: 'done',
   });
+
+  let disposed = false;
 
   return {
     commands: [...ZERG_COMMANDS],
     state,
     patchInstalled: patch.installed,
+    dispose() {
+      if (disposed) {
+        return;
+      }
+
+      disposed = true;
+      let firstError: unknown;
+
+      for (const commandDisposer of commandDisposers.splice(0)) {
+        try {
+          commandDisposer.dispose();
+        } catch (error) {
+          firstError ??= error;
+        } finally {
+          clearRegisteredCommand(commandDisposer.target, commandDisposer.name);
+        }
+      }
+
+      try {
+        patch.dispose();
+      } catch (error) {
+        firstError ??= error;
+      }
+
+      if (firstError) {
+        throw firstError;
+      }
+    },
   };
 }
 
@@ -134,17 +180,17 @@ export function createPiZergCommandHandler(state: ZergState): ZergPiCommandHandl
   };
 }
 
-function registerCommand(context: StructuralPiExtensionContext, command: StructuralPiCommand): void {
+function registerCommand(context: StructuralPiExtensionContext, command: StructuralPiCommand): RegisteredCommandDisposer | undefined {
   const registrar = selectCommandRegistrar(context);
 
   if (!registrar) {
-    return;
+    return undefined;
   }
 
   const registeredNames = registeredCommandsByTarget.get(registrar.target) ?? new Set<ZergCommandName>();
 
   if (registeredNames.has(command.name)) {
-    return;
+    return undefined;
   }
 
   const options: StructuralPiCommandOptions = {
@@ -152,9 +198,37 @@ function registerCommand(context: StructuralPiExtensionContext, command: Structu
     handler: command.handler,
   };
 
-  registrar.registerCommand(command.name, options);
+  const registration = registrar.registerCommand(command.name, options);
   registeredNames.add(command.name);
   registeredCommandsByTarget.set(registrar.target, registeredNames);
+
+  if (!isDisposableRegistration(registration)) {
+    return undefined;
+  }
+
+  return {
+    target: registrar.target,
+    name: command.name,
+    dispose: registration.dispose.bind(registration),
+  };
+}
+
+function clearRegisteredCommand(target: object, name: ZergCommandName): void {
+  const registeredNames = registeredCommandsByTarget.get(target);
+
+  if (!registeredNames) {
+    return;
+  }
+
+  registeredNames.delete(name);
+
+  if (registeredNames.size === 0) {
+    registeredCommandsByTarget.delete(target);
+  }
+}
+
+function isDisposableRegistration(value: unknown): value is DisposableRegistration {
+  return typeof value === 'object' && value !== null && typeof (value as { dispose?: unknown }).dispose === 'function';
 }
 
 function selectCommandRegistrar(context: StructuralPiExtensionContext): SelectedCommandRegistrar | undefined {

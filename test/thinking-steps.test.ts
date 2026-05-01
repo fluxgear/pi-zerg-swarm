@@ -75,7 +75,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v0.1.0 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v0.1.1 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -147,10 +147,58 @@ test('registerZergSwarmExtension does not duplicate registrations for the same c
     },
   };
 
+  const registration = registerZergSwarmExtension(context);
   registerZergSwarmExtension(context);
+  registration.dispose();
   registerZergSwarmExtension(context);
 
   assert.deepEqual(registrations.map((registration) => registration.name), ['zerg', 'zerg-swarm', 'swarm']);
+});
+
+test('registerZergSwarmExtension dispose unregisters disposable commands once and permits clean re-registration', () => {
+  const registrations: Array<{ name: string; options: StructuralPiCommandOptions }> = [];
+  const disposedNames: string[] = [];
+  const context = {
+    registerCommand(name: string, options: StructuralPiCommandOptions) {
+      registrations.push({ name, options });
+      let disposed = false;
+
+      return {
+        dispose() {
+          assert.equal(disposed, false);
+          disposed = true;
+          disposedNames.push(name);
+        },
+      };
+    },
+  };
+
+  const firstRegistration = registerZergSwarmExtension(context);
+  const duplicateRegistration = registerZergSwarmExtension(context);
+
+  assert.equal(firstRegistration.patchInstalled, true);
+  assert.equal(duplicateRegistration.patchInstalled, false);
+  assert.deepEqual(registrations.map((registration) => registration.name), ['zerg', 'zerg-swarm', 'swarm']);
+
+  duplicateRegistration.dispose();
+  firstRegistration.dispose();
+  firstRegistration.dispose();
+
+  assert.deepEqual(disposedNames, ['zerg', 'zerg-swarm', 'swarm']);
+
+  const secondRegistration = registerZergSwarmExtension(context);
+
+  assert.equal(secondRegistration.patchInstalled, true);
+  assert.deepEqual(registrations.map((registration) => registration.name), [
+    'zerg',
+    'zerg-swarm',
+    'swarm',
+    'zerg',
+    'zerg-swarm',
+    'swarm',
+  ]);
+
+  secondRegistration.dispose();
 });
 
 test('renderAgentTree includes nested agents and their tasks', () => {

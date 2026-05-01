@@ -14,8 +14,9 @@ export function installInternalPatch(
 ): ZergInternalPatchController {
   const target = typeof context === 'object' && context !== null ? context : undefined;
   const alreadyInstalled = target ? installedContexts.has(target) : false;
+  const installed = Boolean(target && !alreadyInstalled);
 
-  if (target && !alreadyInstalled) {
+  if (target && installed) {
     installedContexts.add(target);
   }
 
@@ -24,7 +25,7 @@ export function installInternalPatch(
   const now = options.now ?? (() => new Date());
 
   return {
-    installed: Boolean(target && !alreadyInstalled),
+    installed,
     emit(event) {
       if (disposed) {
         throw new Error('Cannot emit zerg internal patch events after dispose().');
@@ -47,6 +48,10 @@ export function installInternalPatch(
     },
     dispose() {
       disposed = true;
+
+      if (installed && target) {
+        installedContexts.delete(target);
+      }
     },
   };
 }
