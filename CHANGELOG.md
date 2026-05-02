@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to semantic versioning after the bootstrap line is established.
 
 
+## [0.5.1] - 2026-05-02
+
+### Fixed
+
+- Fixed fallback tree rendering to honor `AgentIdentity.childIds`-only hierarchy without duplicate roots while preserving cycle and truncation guards.
+- Added bounded explicit-tree missing-child markers and durable render regression coverage for fallback childIds, explicit missing/orphan/duplicate/selected/cycle paths, team fallback, truncation, and non-mutation.
+
+### Changed
+
+- Promoted package metadata and public command/status/help/docs/test version surfaces to v0.5.1 for the audit bugfix patch.
+
 ## [0.5.0] - 2026-05-02
 
 ### Added

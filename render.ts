@@ -13,7 +13,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const tasks = recordValues(snapshot.tasks);
   const running = agents.filter((agent) => agent.status === 'running').length;
   const blocked = [...agents, ...tasks].filter((item) => item.status === 'blocked' || item.status === 'needs-attention').length;
-  return fit(`zerg v0.5.0 command surface | agents ${agents.length} (${running} running) | tasks ${tasks.length} | blocked ${blocked} | mode ${snapshot.mode?.automation ?? 'manual'}`, options.width);
+  return fit(`zerg v0.5.1 command surface | agents ${agents.length} (${running} running) | tasks ${tasks.length} | blocked ${blocked} | mode ${snapshot.mode?.automation ?? 'manual'}`, options.width);
 }
 
 export function renderAgentTree(state: ZergState, options: RenderOptions = {}): string {
@@ -39,6 +39,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
   const agentIds = new Set(agentById.keys());
   const teamIds = new Set(teamById.keys());
   const childrenByParent = new Map<string, AgentIdentity[]>();
+  const childReferencedAgentIds = new Set<string>();
   const tasksByOwner = new Map<string, TaskRecord[]>();
   const teamsByParent = new Map<string, TeamIdentity[]>();
   const agentsByTeam = new Map<string, AgentIdentity[]>();
@@ -51,6 +52,14 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
   for (const agent of agents) {
     if (agent.parentId && agentIds.has(agent.parentId)) {
       addToMap(childrenByParent, agent.parentId, agent);
+    }
+
+    for (const childId of uniqueStrings(agent.childIds)) {
+      const child = agentById.get(childId);
+      if (child) {
+        addToMap(childrenByParent, agent.id, child);
+        childReferencedAgentIds.add(child.id);
+      }
     }
 
     if (agent.teamId && teamIds.has(agent.teamId)) {
@@ -94,7 +103,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
     const nextAncestry = new Set(ancestry);
     nextAncestry.add(agent.id);
 
-    for (const child of (childrenByParent.get(agent.id) ?? []).sort(byLabel)) {
+    for (const child of uniqueById(childrenByParent.get(agent.id) ?? []).sort(byLabel)) {
       if (isRenderLineLimitReached(lines)) {
         return;
       }
@@ -177,7 +186,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
     renderTeam(team, 0);
   }
 
-  for (const agent of agents.filter((candidate) => !candidate.parentId || !agentIds.has(candidate.parentId))) {
+  for (const agent of agents.filter((candidate) => (!candidate.parentId || !agentIds.has(candidate.parentId)) && !childReferencedAgentIds.has(candidate.id))) {
     if (isRenderLineLimitReached(lines)) {
       break;
     }
@@ -206,7 +215,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v0.5.0 command-surface scaffold',
+    'pi-zerg-swarm v0.5.1 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
@@ -236,6 +245,7 @@ function renderTaskLine(task: TaskRecord, width: number, prefix: string, selecte
 function renderExplicitTree(nodes: ZergTreeNode[], width: number, selectedNodeId?: string): string {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const childrenByParent = new Map<string, ZergTreeNode[]>();
+  const missingChildrenByParent = new Map<string, string[]>();
   const referenced = new Set<string>();
   const visited = new Set<string>();
   const lines = ['zerg tree'];
@@ -244,6 +254,7 @@ function renderExplicitTree(nodes: ZergTreeNode[], width: number, selectedNodeId
     for (const childId of uniqueStrings(node.childIds)) {
       const child = nodeById.get(childId);
       if (!child) {
+        addToMap(missingChildrenByParent, node.id, childId);
         continue;
       }
       addToMap(childrenByParent, node.id, child);
@@ -284,6 +295,15 @@ function renderExplicitTree(nodes: ZergTreeNode[], width: number, selectedNodeId
       }
       renderNode(child, depth + 1, nextAncestry);
     }
+
+    for (const missingChildId of uniqueStrings(missingChildrenByParent.get(node.id)).sort()) {
+      if (isRenderLineLimitReached(lines)) {
+        return;
+      }
+      if (!pushRenderLine(lines, renderMissingChildLine(missingChildId, width, `${'│  '.repeat(depth + 1)}└─`), width)) {
+        return;
+      }
+    }
   };
 
   for (const node of nodes.filter((candidate) => (!candidate.parentId || !nodeById.has(candidate.parentId)) && !referenced.has(candidate.id))) {
@@ -308,6 +328,10 @@ function renderTreeNodeLine(node: ZergTreeNode, width: number, prefix: string, s
   const marker = statusMarker(status, isSelected(selectedNodeId, node.id, node.refId));
   const orphan = orphanParent ? ` orphan-parent:${orphanParent}` : '';
   return fit(`${prefix}${marker} ${node.kind} ${safeLabel(node.label, node.id)} [${status}]${orphan}`, width);
+}
+
+function renderMissingChildLine(childId: string, width: number, prefix: string): string {
+  return fit(`${prefix}⚠ missing-child:${safeLabel(childId, 'unknown')} [missing]`, width);
 }
 
 function renderCycleLine(kind: string, label: string | undefined, width: number, prefix: string): string {

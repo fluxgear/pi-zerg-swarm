@@ -438,7 +438,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.5.0 internal patch unavailable; command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.5.1 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -451,11 +451,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.5.0 internal patch unavailable; command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.5.1 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.5.0 internal patch unavailable; command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.5.1 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -677,7 +677,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v0.5.0 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v0.5.1 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -696,7 +696,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
   try {
     assert.equal(registration.patchInstalled, true);
     assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
-    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v0.5.0 internal patch path active']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v0.5.1 internal patch path active']);
 
     eventBus.emit('zerg:smoke');
 
@@ -716,7 +716,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
     });
 
     assert.equal(notifications.length, 1);
-    assert.ok(notifications[0]?.message.includes('zerg v0.5.0 command surface'));
+    assert.ok(notifications[0]?.message.includes('zerg v0.5.1 command surface'));
     assert.equal(notifications[0]?.type, 'info');
   } finally {
     registration.dispose();
@@ -906,4 +906,127 @@ test('renderAgentTree includes nested agents and their tasks', () => {
   assert.ok(tree.includes('task Root task [running]'));
   assert.ok(tree.includes('task Child task [done]'));
   assert.ok(tree.includes('task Grandchild task [blocked]'));
+});
+
+
+test('renderAgentTree nests fallback childIds-only agents without duplicate roots', () => {
+  const state = createZergState({
+    selectedNodeId: 'parent',
+    agents: {
+      parent: { id: 'parent', label: 'Z Parent', kind: 'team-leader', status: 'running', childIds: ['child', 'child'] },
+      child: { id: 'child', label: 'A Child', kind: 'subagent', status: 'idle' },
+    },
+  });
+
+  const tree = renderAgentTree(state);
+  const lines = tree.split('\n');
+  const parentLine = lines.findIndex((line) => line.includes('Z Parent [team-leader/running]'));
+  const childLine = lines.findIndex((line) => line.includes('A Child [subagent/idle]'));
+
+  assert.ok(parentLine > -1);
+  assert.ok(childLine > parentLine);
+  assert.ok(lines[childLine]?.startsWith('│  ├─'));
+  assert.equal(lines.filter((line) => line.includes('A Child [subagent/idle]')).length, 1);
+  assert.ok(lines[parentLine]?.includes('├─▶ Z Parent [team-leader/running]'));
+});
+
+test('renderAgentTree shows explicit tree childIds parentId selected orphan missing and duplicate state', () => {
+  const state = createZergState({
+    selectedNodeId: 'child-ref',
+    tree: {
+      parent: { id: 'parent', kind: 'team', label: 'Z Parent', status: 'running', childIds: ['child', 'missing', 'child', 'missing'] },
+      child: { id: 'child', kind: 'agent', label: 'A Child', status: 'idle', parentId: 'parent', refId: 'child-ref', childIds: [] },
+      orphan: { id: 'orphan', kind: 'task', label: 'Orphan task', status: 'blocked', parentId: 'missing-parent', childIds: [] },
+    },
+  });
+
+  const tree = renderAgentTree(state);
+  const lines = tree.split('\n');
+  const parentLine = lines.findIndex((line) => line.includes('team Z Parent [running]'));
+  const childLines = lines.filter((line) => line.includes('agent A Child [idle]'));
+  const missingLines = lines.filter((line) => line.includes('missing-child:missing [missing]'));
+  const orphanLine = lines.find((line) => line.includes('task Orphan task [blocked]'));
+
+  assert.ok(parentLine > -1);
+  assert.equal(childLines.length, 1);
+  assert.ok(childLines[0]?.startsWith('│  ├─▶ agent A Child [idle]'));
+  assert.equal(missingLines.length, 1);
+  assert.ok(missingLines[0]?.startsWith('│  └─⚠ missing-child:missing [missing]'));
+  assert.ok(orphanLine?.includes('orphan-parent:missing-parent'));
+});
+
+test('renderAgentTree marks explicit cycles instead of recursing forever', () => {
+  const state = createZergState({
+    tree: {
+      alpha: { id: 'alpha', kind: 'agent', label: 'Alpha', status: 'running', childIds: ['beta'] },
+      beta: { id: 'beta', kind: 'agent', label: 'Beta', status: 'idle', childIds: ['alpha'] },
+    },
+  });
+
+  const tree = renderAgentTree(state);
+
+  assert.ok(tree.includes('agent Alpha [running]'));
+  assert.ok(tree.includes('agent Beta [idle]'));
+  assert.ok(tree.includes('↻ agent Alpha [cycle]'));
+});
+
+test('renderAgentTree renders fallback teams members selected marker and team tasks', () => {
+  const state = createZergState({
+    selectedNodeId: 'worker',
+    agents: {
+      leader: { id: 'leader', label: 'Leader', kind: 'team-leader', status: 'running', teamId: 'team' },
+      worker: { id: 'worker', label: 'Worker', kind: 'subagent', status: 'idle' },
+    },
+    teams: {
+      team: { id: 'team', label: 'Ops', kind: 'team', status: 'running', leaderAgentId: 'leader', memberAgentIds: ['worker', 'worker'], taskIds: ['team-task'] },
+    },
+    tasks: {
+      teamTask: { id: 'team-task', title: 'Coordinate release', status: 'running', teamId: 'team', updatedAt: '2026-04-30T00:00:00.000Z' },
+    },
+  });
+
+  const tree = renderAgentTree(state);
+
+  assert.ok(tree.includes('team Ops [team/running]'));
+  assert.equal(tree.split('\n').filter((line) => line.includes('Worker [subagent/idle]')).length, 1);
+  assert.ok(tree.includes('│  ├─▶ Worker [subagent/idle]'));
+  assert.ok(tree.includes('│  └─● task Coordinate release [running]'));
+});
+
+test('renderAgentTree truncates large render output at four hundred lines', () => {
+  const agents = Object.fromEntries(Array.from({ length: 500 }, (_, index) => {
+    const id = `agent-${String(index).padStart(3, '0')}`;
+    return [id, { id, label: `Agent ${String(index).padStart(3, '0')}`, kind: 'subagent' as const, status: 'idle' as const }];
+  }));
+  const state = createZergState({ agents });
+
+  const lines = renderAgentTree(state).split('\n');
+
+  assert.equal(lines.length, 400);
+  assert.ok(lines.at(-1)?.includes('render output truncated at 400 lines'));
+});
+
+test('renderAgentTree does not mutate render state input', () => {
+  const state = createZergState({
+    selectedNodeId: 'child-ref',
+    agents: {
+      parent: { id: 'parent', label: 'Parent', kind: 'team-leader', status: 'running', childIds: ['child'] },
+      child: { id: 'child', label: 'Child', kind: 'subagent', status: 'idle' },
+    },
+    teams: {
+      team: { id: 'team', label: 'Team', kind: 'team', status: 'running', memberAgentIds: ['parent'] },
+    },
+    tasks: {
+      task: { id: 'task', title: 'Task', status: 'blocked', ownerAgentId: 'child', blockedBy: ['dep'], updatedAt: '2026-04-30T00:00:00.000Z' },
+    },
+    tree: {
+      parentNode: { id: 'parentNode', kind: 'agent', label: 'Parent', status: 'running', refId: 'parent', childIds: ['childNode', 'missing'] },
+      childNode: { id: 'childNode', kind: 'agent', label: 'Child', status: 'idle', refId: 'child-ref', parentId: 'parentNode', childIds: [] },
+    },
+  });
+  const before = JSON.stringify(state);
+
+  renderAgentTree(state);
+
+  assert.equal(JSON.stringify(state), before);
 });

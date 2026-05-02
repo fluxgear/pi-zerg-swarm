@@ -2,7 +2,7 @@
 
 `pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
 
-> v0.5.0 status: render/tree visibility expansion complete on top of the command-surface, types/state, parse/thinking-step, internal-patch, and release-hygiene scaffold. Package metadata, command/status/help output, README current-release wording, changelog top entry, and tests now align on v0.5.0; slash-free Pi command registration, `/zerg` aliases, scaffold help/status/tree output, deterministic thinking-step parsing with source-line IDs, status prefixes/aliases, checkbox precedence, text renderers, deterministic state schema metadata, snapshot-safe state container APIs, team/tree helpers, registration disposal cleanup, safe Pi event-bus emit/subscription observation, duplicate patch suppression, rollback/disposal behavior, and expanded tree rendering for explicit `state.tree` nodes, team/agent fallback hierarchies, selected/status markers, orphan/cycle/missing-child safety, and bounded/truncated output are present. Manual Pi overlay verification has not been performed; real subagent spawning, team loops, task queues, live overlays, and intervention controls are planned but not implemented yet.
+> v0.5.1 status: audit bugfix patch on top of the v0.5.0 render/tree visibility release. Package metadata, command/status/help output, README current-release wording, changelog top entry, and tests now align on v0.5.1; slash-free Pi command registration, `/zerg` aliases, scaffold help/status/tree output, deterministic thinking-step parsing with source-line IDs, status prefixes/aliases, checkbox precedence, text renderers, deterministic state schema metadata, snapshot-safe state container APIs, team/tree helpers, registration disposal cleanup, safe Pi event-bus emit/subscription observation, duplicate patch suppression, rollback/disposal behavior, expanded tree rendering, fallback `AgentIdentity.childIds` hierarchy, explicit missing-child markers, durable render regression coverage, and bounded/truncated output are present. Manual Pi overlay verification has not been performed; real subagent spawning, team loops, task queues, live overlays, and intervention controls are planned but not implemented yet.
 
 ## Commands
 
@@ -10,7 +10,7 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v0.5.0 these commands display scaffold help, status, expanded tree visibility, or deterministic thinking-step parser output through Pi command handlers backed by snapshot-safe state helpers, and the extension safely observes Pi event-bus emit/subscription activity when an event bus is available.
+At v0.5.1 these commands display scaffold help, status, expanded tree visibility, or deterministic thinking-step parser output through Pi command handlers backed by snapshot-safe state helpers, and the extension safely observes Pi event-bus emit/subscription activity when an event bus is available.
 
 ## Architecture
 
@@ -65,7 +65,7 @@ npm run build
 npm test
 ```
 
-`npm run build` performs strict TypeScript no-emit checking. `npm test` runs the parser plus command-surface, v0.2.0 state/container, registration snapshot, v0.3.0 thinking-step parser, internal-patch event-bus wrapping/duplicate/rollback/dispose, v0.4.1 release-hygiene version-surface assertions, v0.5.0 public version-surface assertions, and render tests with Node's built-in test runner and `tsx`.
+`npm run build` performs strict TypeScript no-emit checking. `npm test` runs the parser plus command-surface, v0.2.0 state/container, registration snapshot, v0.3.0 thinking-step parser, internal-patch event-bus wrapping/duplicate/rollback/dispose, v0.4.1 release-hygiene assertions, v0.5.1 public version-surface assertions, and render regression tests with Node's built-in test runner and `tsx`.
 
 ## Roadmap
 
@@ -74,7 +74,8 @@ npm test
 - v0.3.0: baseline thinking-step parser hardening and Pi command integration (completed)
 - v0.4.0: Pi internal bridge validation and safe event-bus observation (completed)
 - v0.4.1: audit bugfix and release-hygiene version-surface consistency (completed)
-- v0.5.0: render and tree visibility expansion with explicit tree, fallback hierarchy, safety markers, and truncation bounds (current release)
+- v0.5.0: render and tree visibility expansion with explicit tree, fallback hierarchy, safety markers, and truncation bounds (completed)
+- v0.5.1: audit bugfix patch for fallback childIds hierarchy, explicit missing-child markers, and durable render regressions (current release)
 - v0.6.0+: subagent runtime, monitoring, intervention, and package readiness
 
 ## License
