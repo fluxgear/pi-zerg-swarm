@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to semantic versioning after the bootstrap line is established.
 
 
+## [0.5.0] - 2026-05-02
+
+### Added
+
+- Added expanded render/tree visibility for explicit `state.tree` nodes, team/agent fallback hierarchies, selected/status markers, orphan/missing-child/cycle safety, duplicate suppression, and bounded output with truncation.
+
+### Changed
+
+- Promoted package metadata and public command/status/help/docs/test version surfaces to v0.5.0 for the render/tree milestone.
+
+### Known Limitations
+
+- Manual Pi overlay verification has not been performed; live TUI overlays, subagent runtime loops, task queues, and intervention controls remain planned.
+
 ## [0.4.1] - 2026-05-02
 
 ### Fixed
