@@ -2,7 +2,7 @@ import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
 import { renderAgentTree, renderHelp, renderStatusLine } from './render.js';
 import { createZergStateContainer, readSharedZergState, snapshotZergState } from './state.js';
-import { ZERG_COMMANDS, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type ZergCommandName, type ZergCommandResult, type ZergPiCommandHandler, type ZergState } from './types.js';
+import { ZERG_COMMANDS, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type ZergCommandName, type ZergCommandResult, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergState } from './types.js';
 
 export interface ZergExtensionRegistration {
   commands: ZergCommandName[];
@@ -45,28 +45,38 @@ const registeredCommandsByTarget = new WeakMap<object, Set<ZergCommandName>>();
 
 export function registerZergSwarmExtension(context: StructuralPiExtensionContext = {}): ZergExtensionRegistration {
   const stateContainer = createZergStateContainer(readSharedZergState());
-  const patch = installInternalPatch(context, stateContainer);
-  const handler = createPiZergCommandHandler(() => stateContainer.snapshot());
+  let patch: ZergInternalPatchController | undefined;
   const commandDisposers: RegisteredCommandDisposer[] = [];
 
-  for (const name of ZERG_COMMANDS) {
-    const commandDisposer = registerCommand(context, {
-      name,
-      description: 'Show pi-zerg-swarm command-surface status and help.',
-      handler,
-    });
+  try {
+    patch = installInternalPatch(context, stateContainer);
+    const handler = createPiZergCommandHandler(() => stateContainer.snapshot());
 
-    if (commandDisposer) {
-      commandDisposers.push(commandDisposer);
+    for (const name of ZERG_COMMANDS) {
+      const commandDisposer = registerCommand(context, {
+        name,
+        description: 'Show pi-zerg-swarm command-surface status and help.',
+        handler,
+      });
+
+      if (commandDisposer) {
+        commandDisposers.push(commandDisposer);
+      }
     }
+
+    patch.emit({
+      type: 'hook',
+      message: patch.installed
+        ? 'pi-zerg-swarm v0.4.0 internal patch path active'
+        : 'pi-zerg-swarm v0.4.0 internal patch unavailable; command surface registered',
+      status: patch.installed ? 'running' : 'done',
+    });
+  } catch (error) {
+    disposeStartupResources(commandDisposers, patch);
+    throw error;
   }
 
-  patch.emit({
-    type: 'hook',
-    message: 'pi-zerg-swarm v0.3.0 command surface registered',
-    status: 'done',
-  });
-
+  const installedPatch = patch;
   let disposed = false;
 
   return {
@@ -74,7 +84,7 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
     get state() {
       return stateContainer.snapshot();
     },
-    patchInstalled: patch.installed,
+    patchInstalled: installedPatch.installed,
     dispose() {
       if (disposed) {
         return;
@@ -94,7 +104,7 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
       }
 
       try {
-        patch.dispose();
+        installedPatch.dispose();
       } catch (error) {
         firstError ??= error;
       }
@@ -104,6 +114,27 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
       }
     },
   };
+}
+
+function disposeStartupResources(
+  commandDisposers: RegisteredCommandDisposer[],
+  patch: ZergInternalPatchController | undefined,
+): void {
+  for (const commandDisposer of commandDisposers.splice(0)) {
+    try {
+      commandDisposer.dispose();
+    } catch {
+      // Preserve the original startup error while still clearing local registration bookkeeping.
+    } finally {
+      clearRegisteredCommand(commandDisposer.target, commandDisposer.name);
+    }
+  }
+
+  try {
+    patch?.dispose();
+  } catch {
+    // Preserve the original startup error; normal dispose() still surfaces cleanup failures.
+  }
 }
 
 export function createZergCommandHandler(stateOrReader: ZergState | (() => ZergState)): (input?: string) => ZergCommandResult {

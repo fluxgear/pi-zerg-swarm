@@ -23,6 +23,34 @@ function createCommandSurfaceState(): ZergState {
   });
 }
 
+interface FakePiEventBus {
+  emit(eventName: unknown, ...args: unknown[]): number;
+  on(eventName: unknown, handler: (...args: unknown[]) => unknown): { dispose(): void };
+  emitted: Array<{ eventName: unknown; args: unknown[] }>;
+  subscriptions: Array<{ eventName: unknown; handler: (...args: unknown[]) => unknown }>;
+}
+
+function createFakePiEventBus(): FakePiEventBus {
+  const eventBus: FakePiEventBus = {
+    emitted: [],
+    subscriptions: [],
+    emit(eventName, ...args) {
+      eventBus.emitted.push({ eventName, args });
+      return eventBus.emitted.length;
+    },
+    on(eventName, handler) {
+      eventBus.subscriptions.push({ eventName, handler });
+      return {
+        dispose() {
+          // Fake Pi event-bus subscriptions are inert for these structural tests.
+        },
+      };
+    },
+  };
+
+  return eventBus;
+}
+
 test('createZergState provides deterministic v0.2.0 defaults', () => {
   const state = createZergState();
 
@@ -195,11 +223,113 @@ test('installInternalPatch emits monotonic IDs through truncation', () => {
     patch.emit({ type: 'hook', message: 'four' }),
   ];
 
+  assert.equal(patch.installed, false);
   assert.deepEqual(emitted.map((event) => event.id), ['event-1', 'event-2', 'event-3', 'event-4']);
   assert.deepEqual(state.events.map((event) => event.id), ['event-3', 'event-4']);
   assert.deepEqual(state.events.map((event) => event.message), ['three', 'four']);
   assert.deepEqual(state.events.map((event) => event.createdAt), ['2026-04-30T00:00:00.000Z', '2026-04-30T00:00:00.000Z']);
   assert.equal(state.revision, 4);
+
+  patch.dispose();
+  assert.throws(() => patch.emit({ type: 'hook', message: 'after dispose' }), /Cannot emit/);
+});
+
+test('installInternalPatch wraps Pi event bus once and restores on dispose', () => {
+  const state = createZergState();
+  const eventBus = createFakePiEventBus();
+  const originalEmit = eventBus.emit;
+  const originalOn = eventBus.on;
+  const patch = installInternalPatch({ events: eventBus }, state, {
+    maxEvents: 2,
+    now: () => new Date('2026-04-30T00:00:00.000Z'),
+  });
+
+  assert.equal(patch.installed, true);
+  assert.notEqual(eventBus.emit, originalEmit);
+  assert.notEqual(eventBus.on, originalOn);
+
+  assert.equal(eventBus.emit('agent:started', { id: 'root' }), 1);
+  assert.deepEqual(state.events.map((event) => event.message), ['pi-zerg-swarm observed Pi event bus emit: agent:started']);
+
+  eventBus.emit('agent:continued');
+  eventBus.emit('agent:finished');
+
+  assert.deepEqual(state.events.map((event) => event.id), ['event-2', 'event-3']);
+  assert.deepEqual(state.events.map((event) => event.message), [
+    'pi-zerg-swarm observed Pi event bus emit: agent:continued',
+    'pi-zerg-swarm observed Pi event bus emit: agent:finished',
+  ]);
+
+  patch.dispose();
+  assert.equal(eventBus.emit, originalEmit);
+  assert.equal(eventBus.on, originalOn);
+
+  const reinstalled = installInternalPatch({ events: eventBus }, state);
+  assert.equal(reinstalled.installed, true);
+  reinstalled.dispose();
+});
+
+test('installInternalPatch duplicate controllers do not double-wrap or restore active patch', () => {
+  const state = createZergState();
+  const eventBus = createFakePiEventBus();
+  const originalEmit = eventBus.emit;
+  const first = installInternalPatch({ events: eventBus }, state);
+  const wrappedEmit = eventBus.emit;
+  const duplicate = installInternalPatch({ events: eventBus }, state);
+
+  assert.equal(first.installed, true);
+  assert.equal(duplicate.installed, false);
+  assert.equal(eventBus.emit, wrappedEmit);
+
+  eventBus.emit('tick');
+  assert.equal(state.events.filter((event) => event.message.includes('event bus emit: tick')).length, 1);
+
+  duplicate.dispose();
+  assert.equal(eventBus.emit, wrappedEmit);
+
+  eventBus.emit('tock');
+  assert.equal(state.events.filter((event) => event.message.includes('event bus emit: tock')).length, 1);
+
+  first.dispose();
+  assert.equal(eventBus.emit, originalEmit);
+});
+
+test('installInternalPatch rolls back partial event-bus patch failure', () => {
+  const state = createZergState();
+  const eventBus = createFakePiEventBus();
+  const originalEmit = eventBus.emit;
+
+  Object.defineProperty(eventBus, 'on', {
+    configurable: true,
+    get() {
+      return () => ({ dispose() {} });
+    },
+    set() {
+      throw new Error('cannot patch on');
+    },
+  });
+
+  assert.throws(() => installInternalPatch({ events: eventBus }, state), /cannot patch on/);
+  assert.equal(eventBus.emit, originalEmit);
+
+  const reusableBus = createFakePiEventBus();
+  const patch = installInternalPatch({ events: reusableBus }, state);
+  assert.equal(patch.installed, true);
+  patch.dispose();
+});
+
+test('installInternalPatch unsupported contexts use fallback lifecycle emission', () => {
+  const state = createZergState();
+  const patch = installInternalPatch({}, state, {
+    now: () => new Date('2026-04-30T00:00:00.000Z'),
+  });
+
+  assert.equal(patch.installed, false);
+  const emitted = patch.emit({ type: 'hook', message: 'fallback explicit lifecycle' });
+
+  assert.equal(emitted.id, 'event-1');
+  assert.equal(emitted.createdAt, '2026-04-30T00:00:00.000Z');
+  assert.deepEqual(state.events.map((event) => event.message), ['fallback explicit lifecycle']);
 
   patch.dispose();
   assert.throws(() => patch.emit({ type: 'hook', message: 'after dispose' }), /Cannot emit/);
@@ -253,7 +383,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.3.0 command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.4.0 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -266,11 +396,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.3.0 command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.4.0 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.3.0 command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.4.0 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -496,6 +626,86 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   assert.equal(notifications[0]?.type, 'info');
 });
 
+test('registerZergSwarmExtension activates Pi event-bus patch once with command flow', async () => {
+  const registrations: Array<{ name: string; options: StructuralPiCommandOptions }> = [];
+  const notifications: Array<{ message: string; type?: string }> = [];
+  const eventBus = createFakePiEventBus();
+
+  const registration = registerZergSwarmExtension({
+    events: eventBus,
+    registerCommand(name, options) {
+      registrations.push({ name, options });
+    },
+  });
+
+  try {
+    assert.equal(registration.patchInstalled, true);
+    assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v0.4.0 internal patch path active']);
+
+    eventBus.emit('zerg:smoke');
+
+    const observedEvents = registration.state.events.filter((event) => event.message.includes('event bus emit: zerg:smoke'));
+    assert.equal(observedEvents.length, 1);
+
+    const firstHandler = registrations[0]?.options.handler;
+    assert.ok(firstHandler);
+
+    await firstHandler('status', {
+      hasUI: true,
+      ui: {
+        notify(message, type) {
+          notifications.push({ message, type });
+        },
+      },
+    });
+
+    assert.equal(notifications.length, 1);
+    assert.ok(notifications[0]?.message.includes('zerg v0.3.0 command surface'));
+    assert.equal(notifications[0]?.type, 'info');
+  } finally {
+    registration.dispose();
+  }
+});
+
+test('registerZergSwarmExtension restores patch and commands when startup fails', () => {
+  const registrations: string[] = [];
+  const disposedNames: string[] = [];
+  const eventBus = createFakePiEventBus();
+  const originalEmit = eventBus.emit;
+  let fail = true;
+
+  const context = {
+    events: eventBus,
+    registerCommand(name: string, _options: StructuralPiCommandOptions) {
+      if (fail && name === 'zerg-swarm') {
+        throw new Error('register failed');
+      }
+
+      registrations.push(name);
+      return {
+        dispose() {
+          disposedNames.push(name);
+        },
+      };
+    },
+  };
+
+  assert.throws(() => registerZergSwarmExtension(context), /register failed/);
+  assert.equal(eventBus.emit, originalEmit);
+  assert.deepEqual(disposedNames, ['zerg']);
+
+  fail = false;
+  const registration = registerZergSwarmExtension(context);
+
+  try {
+    assert.equal(registration.patchInstalled, true);
+    assert.deepEqual(registrations, ['zerg', 'zerg', 'zerg-swarm', 'swarm']);
+  } finally {
+    registration.dispose();
+  }
+});
+
 test('registered aliases dispatch status through equivalent handlers', async () => {
   const registrations: Array<{ name: string; options: StructuralPiCommandOptions }> = [];
   const notifications: Array<{ message: string; type?: string }> = [];
@@ -576,6 +786,7 @@ test('registerZergSwarmExtension dispose unregisters disposable commands once an
   const registrations: Array<{ name: string; options: StructuralPiCommandOptions }> = [];
   const disposedNames: string[] = [];
   const context = {
+    events: createFakePiEventBus(),
     registerCommand(name: string, options: StructuralPiCommandOptions) {
       registrations.push({ name, options });
       let disposed = false;

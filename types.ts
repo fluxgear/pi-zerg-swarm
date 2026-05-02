@@ -188,6 +188,10 @@ export interface StructuralPiCommand extends StructuralPiCommandOptions {
 
 export interface StructuralPiExtensionContext {
   registerCommand?(name: ZergCommandName, options: StructuralPiCommandOptions): unknown;
+  events?: {
+    emit?(eventName: unknown, ...args: unknown[]): unknown;
+    on?(eventName: unknown, handler: (...args: unknown[]) => unknown): unknown;
+  };
   commands?: {
     register?(name: ZergCommandName, options: StructuralPiCommandOptions): unknown;
     registerCommand?(name: ZergCommandName, options: StructuralPiCommandOptions): unknown;
