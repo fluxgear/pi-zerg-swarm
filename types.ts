@@ -8,6 +8,9 @@ export type AgentStatus = 'idle' | 'running' | 'blocked' | 'needs-attention' | '
 export type TaskStatus = AgentStatus;
 export type AutomationMode = 'manual' | 'assisted' | 'automatic';
 export type ZergMode = AutomationMode;
+export type ZergRuntimeTransitionAction = 'create' | 'start' | 'progress' | 'stop' | 'fail' | 'reset';
+export type ZergRuntimeHealth = 'unknown' | 'healthy' | 'degraded' | 'blocked' | 'failed' | 'stopped';
+export type ZergRuntimeEntity = 'agent' | 'team';
 export type ThinkingStepStatus = 'todo' | 'running' | 'blocked' | 'done' | 'failed' | 'unknown';
 export type ZergContextKind = 'command' | 'extension' | 'team' | 'agent' | 'task';
 export type ZergTreeNodeKind = 'agent' | 'task' | 'team';
@@ -27,6 +30,44 @@ export interface ZergContext {
   metadata?: ZergExtensionFields;
 }
 
+export interface ZergRuntimeModeContext {
+  automation: AutomationMode;
+  interventionEnabled: boolean;
+  contextId?: string;
+}
+
+export interface ZergRuntimeState {
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  stoppedAt?: string;
+  lastActivityAt?: string;
+  lastActivity?: string;
+  health: ZergRuntimeHealth;
+  mode: ZergRuntimeModeContext;
+}
+
+export interface ZergRuntimeTransition {
+  entity: ZergRuntimeEntity;
+  action: ZergRuntimeTransitionAction;
+  id: string;
+  label?: string;
+  kind?: AgentKind | TeamKind;
+  status?: AgentStatus;
+  health?: ZergRuntimeHealth;
+  activity?: string;
+  at?: string;
+  mode?: Partial<ZergRuntimeModeContext>;
+  contextId?: string;
+  parentId?: string;
+  childIds?: string[];
+  teamId?: string;
+  leaderAgentId?: string;
+  memberAgentIds?: string[];
+  parentTeamId?: string;
+  taskIds?: string[];
+}
+
 export interface AgentIdentity {
   id: string;
   label: string;
@@ -36,6 +77,7 @@ export interface AgentIdentity {
   teamId?: string;
   childIds?: string[];
   contextId?: string;
+  runtime?: ZergRuntimeState;
   metadata?: ZergExtensionFields;
   extensions?: ZergExtensionFields;
 }
@@ -49,6 +91,7 @@ export interface TeamIdentity {
   memberAgentIds: string[];
   parentTeamId?: string;
   taskIds?: string[];
+  runtime?: ZergRuntimeState;
   metadata?: ZergExtensionFields;
   extensions?: ZergExtensionFields;
 }
@@ -72,6 +115,10 @@ export interface HookLifecycleEvent {
   type: 'agent' | 'task' | 'team' | 'tree' | 'hook' | 'permission' | 'mode' | 'state';
   message: string;
   status?: AgentStatus | TaskStatus | ThinkingStepStatus;
+  action?: ZergRuntimeTransitionAction;
+  health?: ZergRuntimeHealth;
+  mode?: ZergRuntimeModeContext;
+  sequence?: number;
   agentId?: string;
   taskId?: string;
   teamId?: string;

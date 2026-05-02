@@ -11,9 +11,14 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const snapshot = state ?? ({} as ZergState);
   const agents = recordValues(snapshot.agents);
   const tasks = recordValues(snapshot.tasks);
-  const running = agents.filter((agent) => agent.status === 'running').length;
-  const blocked = [...agents, ...tasks].filter((item) => item.status === 'blocked' || item.status === 'needs-attention').length;
-  return fit(`zerg v0.5.1 command surface | agents ${agents.length} (${running} running) | tasks ${tasks.length} | blocked ${blocked} | mode ${snapshot.mode?.automation ?? 'manual'}`, options.width);
+  const teams = recordValues(snapshot.teams);
+  const runningAgents = agents.filter((agent) => agent.status === 'running').length;
+  const runningTeams = teams.filter((team) => team.status === 'running').length;
+  const unhealthy = [...agents, ...teams].filter(hasUnhealthyRuntime).length;
+  const blocked = [...agents, ...tasks, ...teams].filter((item) => item.status === 'blocked' || item.status === 'needs-attention').length;
+  const latestActivity = renderLatestRuntimeActivity([...agents, ...teams]);
+  const activity = latestActivity ? ` | last ${latestActivity}` : '';
+  return fit(`zerg v0.6.0 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | mode ${snapshot.mode?.automation ?? 'manual'}`, options.width);
 }
 
 export function renderAgentTree(state: ZergState, options: RenderOptions = {}): string {
@@ -215,25 +220,29 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v0.5.1 command-surface scaffold',
+    'pi-zerg-swarm v0.6.0 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
-    'Available now: slash-free Pi command registration, aliases, scaffold status/tree output, thinking-step parsing, text rendering, and safe Pi event-bus emit/subscription observation.',
-    'Not implemented yet: real subagent spawning, team runtime, task queues, live TUI overlays, or manual/automation intervention controls.',
+    'Lifecycle syntax: /zerg agent create|start|progress|stop|fail|reset <agent-id> [label|activity]',
+    'Lifecycle syntax: /zerg team create|start|progress|stop|fail|reset <team-id> [label|activity]',
+    'Available now: slash-free Pi command registration, aliases, lifecycle state updates, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
+    'Not implemented yet: external process spawning, task queues, live TUI overlays, or full manual/automation intervention controls.',
   ].join('\n');
 }
 
 function renderAgentLine(agent: AgentIdentity, width: number, prefix: string, selectedNodeId?: string): string {
   const kind = agent.kind ?? 'agent';
   const status = agent.status ?? 'unknown';
-  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, agent.id))} ${safeLabel(agent.label, agent.id)} [${kind}/${status}]`, width);
+  const runtime = renderRuntimeHint(agent.runtime);
+  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, agent.id))} ${safeLabel(agent.label, agent.id)} [${kind}/${status}]${runtime}`, width);
 }
 
 function renderTeamLine(team: TeamIdentity, width: number, prefix: string, selectedNodeId?: string): string {
   const kind = team.kind ?? 'team';
   const status = team.status ?? 'unknown';
-  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, team.id))} team ${safeLabel(team.label, team.id)} [${kind}/${status}]`, width);
+  const runtime = renderRuntimeHint(team.runtime);
+  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, team.id))} team ${safeLabel(team.label, team.id)} [${kind}/${status}]${runtime}`, width);
 }
 
 function renderTaskLine(task: TaskRecord, width: number, prefix: string, selectedNodeId?: string): string {
@@ -357,6 +366,43 @@ function isRenderLineLimitReached(lines: string[]): boolean {
 
 function renderTruncationLine(width: number): string {
   return fit(`└─… render output truncated at ${MAX_RENDER_LINES} lines`, width);
+}
+
+
+function renderRuntimeHint(runtime: AgentIdentity['runtime'] | TeamIdentity['runtime']): string {
+  if (!runtime) {
+    return '';
+  }
+
+  const parts = [`health:${runtime.health}`];
+
+  if (runtime.lastActivity) {
+    parts.push(`last:${runtime.lastActivity}`);
+  }
+
+  return ` {${parts.join(' ')}}`;
+}
+
+function renderLatestRuntimeActivity(items: Array<AgentIdentity | TeamIdentity>): string | undefined {
+  const latest = items
+    .map((item) => ({ label: safeLabel(item.label, item.id), runtime: item.runtime }))
+    .filter((item): item is { label: string; runtime: NonNullable<AgentIdentity['runtime']> } => Boolean(item.runtime?.lastActivity))
+    .sort((left, right) => runtimeActivityTimestamp(right.runtime).localeCompare(runtimeActivityTimestamp(left.runtime)))[0];
+
+  return latest ? `${latest.label}: ${latest.runtime.lastActivity}` : undefined;
+}
+
+function runtimeActivityTimestamp(runtime: NonNullable<AgentIdentity['runtime']>): string {
+  return runtime.lastActivityAt ?? runtime.updatedAt;
+}
+
+function hasUnhealthyRuntime(item: AgentIdentity | TeamIdentity): boolean {
+  return item.runtime?.health === 'blocked'
+    || item.runtime?.health === 'degraded'
+    || item.runtime?.health === 'failed'
+    || item.status === 'blocked'
+    || item.status === 'needs-attention'
+    || item.status === 'failed';
 }
 
 function fit(value: string, width = DEFAULT_WIDTH): string {

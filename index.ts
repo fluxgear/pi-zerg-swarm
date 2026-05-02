@@ -1,8 +1,14 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
 import { renderAgentTree, renderHelp, renderStatusLine } from './render.js';
-import { createZergStateContainer, readSharedZergState, snapshotZergState } from './state.js';
-import { ZERG_COMMANDS, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type ZergCommandName, type ZergCommandResult, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergState } from './types.js';
+import { applyRuntimeTransition, createZergStateContainer, readSharedZergState, replaceSharedZergState, snapshotZergState } from './state.js';
+import { ZERG_COMMANDS, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type ZergCommandName, type ZergCommandResult, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer } from './types.js';
+
+export interface ZergCommandHandlerOptions {
+  now?: () => Date;
+}
+
+type RuntimeCommandOptions = ZergCommandHandlerOptions & { syncSharedState?: boolean };
 
 export interface ZergExtensionRegistration {
   commands: ZergCommandName[];
@@ -18,8 +24,12 @@ export interface ZergExtensionRegistration {
   dispose(): void;
 }
 
-type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps';
+type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team';
 type ZergCommandDispatcher = (payload: string) => ZergCommandResult;
+type RuntimeParseResult = { ok: false; output: string } | { ok: true; transition: ZergRuntimeTransition };
+type ZergStateSource = ZergState | (() => ZergState) | ZergStateContainer;
+
+const RUNTIME_WRITABLE_STATE_ERROR = 'Runtime lifecycle commands require writable zerg state.';
 
 interface NormalizedZergCommandInput {
   topic: string;
@@ -43,14 +53,37 @@ interface DisposableRegistration {
 
 const registeredCommandsByTarget = new WeakMap<object, Set<ZergCommandName>>();
 
-export function registerZergSwarmExtension(context: StructuralPiExtensionContext = {}): ZergExtensionRegistration {
+export function registerZergSwarmExtension(
+  context: StructuralPiExtensionContext = {},
+  options: ZergCommandHandlerOptions = {},
+): ZergExtensionRegistration {
   const stateContainer = createZergStateContainer(readSharedZergState());
   let patch: ZergInternalPatchController | undefined;
   const commandDisposers: RegisteredCommandDisposer[] = [];
 
+  const syncSharedStateFromContainer = () => {
+    replaceSharedZergState(stateContainer.snapshot());
+  };
+
+  const syncedStateContainer: ZergStateContainer = {
+    read: () => stateContainer.read(),
+    snapshot: () => stateContainer.snapshot(),
+    replace: (nextState) => {
+      const snapshot = stateContainer.replace(nextState);
+      syncSharedStateFromContainer();
+      return snapshot;
+    },
+    update: (nextState, patchOptions) => {
+      const snapshot = stateContainer.update(nextState, patchOptions);
+      syncSharedStateFromContainer();
+      return snapshot;
+    },
+  };
+
   try {
-    patch = installInternalPatch(context, stateContainer);
-    const handler = createPiZergCommandHandler(() => stateContainer.snapshot());
+    const installedPatch = installInternalPatch(context, syncedStateContainer);
+    patch = installedPatch;
+    const handler = createPiZergCommandHandler(syncedStateContainer, { ...options, syncSharedState: true } as RuntimeCommandOptions);
 
     for (const name of ZERG_COMMANDS) {
       const commandDisposer = registerCommand(context, {
@@ -67,8 +100,8 @@ export function registerZergSwarmExtension(context: StructuralPiExtensionContext
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v0.5.1 internal patch path active'
-        : 'pi-zerg-swarm v0.5.1 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v0.6.0 internal patch path active'
+        : 'pi-zerg-swarm v0.6.0 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -137,11 +170,16 @@ function disposeStartupResources(
   }
 }
 
-export function createZergCommandHandler(stateOrReader: ZergState | (() => ZergState)): (input?: string) => ZergCommandResult {
+const PI_COMMAND_OUTPUT_WIDTH = 240;
+
+export function createZergCommandHandler(
+  stateOrReader: ZergStateSource,
+  options: ZergCommandHandlerOptions = {},
+): (input?: string) => ZergCommandResult {
   const dispatchers: Record<ZergCommandTopic, ZergCommandDispatcher> = {
     help: () => ({ ok: true, output: renderHelp(resolveZergStateSnapshot(stateOrReader)) }),
-    status: () => ({ ok: true, output: renderStatusLine(resolveZergStateSnapshot(stateOrReader)) }),
-    tree: () => ({ ok: true, output: renderAgentTree(resolveZergStateSnapshot(stateOrReader)) }),
+    status: () => ({ ok: true, output: renderStatusLine(resolveZergStateSnapshot(stateOrReader), { width: PI_COMMAND_OUTPUT_WIDTH }) }),
+    tree: () => ({ ok: true, output: renderAgentTree(resolveZergStateSnapshot(stateOrReader), { width: PI_COMMAND_OUTPUT_WIDTH }) }),
     steps: (payload: string) => {
       const steps = deriveThinkingSteps(payload);
       const output = steps.length
@@ -149,6 +187,8 @@ export function createZergCommandHandler(stateOrReader: ZergState | (() => ZergS
         : 'No thinking steps detected.';
       return { ok: true, output };
     },
+    agent: (payload: string) => dispatchRuntimeCommand(stateOrReader, 'agent', payload, options),
+    team: (payload: string) => dispatchRuntimeCommand(stateOrReader, 'team', payload, options),
   };
 
   return (input?: string): ZergCommandResult => {
@@ -207,11 +247,102 @@ function isZergInvocationToken(value: string): value is ZergCommandName {
 }
 
 function isZergCommandTopic(value: string): value is ZergCommandTopic {
-  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps';
+  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agent' || value === 'team';
 }
 
-export function createPiZergCommandHandler(stateOrReader: ZergState | (() => ZergState)): ZergPiCommandHandler {
-  const scaffoldHandler = createZergCommandHandler(stateOrReader);
+function dispatchRuntimeCommand(
+  stateOrReader: ZergStateSource,
+  entity: ZergRuntimeEntity,
+  payload: string,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
+  const container = getWritableStateContainer(stateOrReader);
+
+  if (!container) {
+    return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
+  }
+
+  const parsed = parseRuntimeTransition(entity, payload);
+
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  const nextState = applyRuntimeTransition(container.read(), parsed.transition, {
+    now: options.now ?? (() => new Date()),
+  });
+  const snapshot = container.replace(nextState);
+
+  if (options.syncSharedState) {
+    replaceSharedZergState(snapshot);
+  }
+
+  return {
+    ok: true,
+    output: `${parsed.transition.entity} ${parsed.transition.id} ${parsed.transition.action} applied.\n${renderStatusLine(snapshot, { width: PI_COMMAND_OUTPUT_WIDTH })}`,
+  };
+}
+
+function parseRuntimeTransition(entity: ZergRuntimeEntity, payload: string): RuntimeParseResult {
+  const [actionToken, id, ...rest] = tokenizeRuntimePayload(payload);
+  const action = actionToken?.toLowerCase();
+
+  if (!isRuntimeAction(action)) {
+    return { ok: false, output: `Unknown ${entity} runtime action: ${actionToken ?? ''}` };
+  }
+
+  if (!id) {
+    return { ok: false, output: `${entity} ${action} requires an id.` };
+  }
+
+  const text = rest.join(' ').trim();
+
+  return {
+    ok: true,
+    transition: {
+      entity,
+      action,
+      id,
+      ...(action === 'create' && text ? { label: text } : {}),
+      ...((action === 'progress' || action === 'fail') && text ? { activity: text } : {}),
+    },
+  };
+}
+
+function tokenizeRuntimePayload(payload: string): string[] {
+  const tokens: string[] = [];
+  const matcher = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = matcher.exec(payload)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? '');
+  }
+
+  return tokens;
+}
+
+function isRuntimeAction(value: string | undefined): value is ZergRuntimeTransitionAction {
+  return value === 'create' || value === 'start' || value === 'progress' || value === 'stop' || value === 'fail' || value === 'reset';
+}
+
+function getWritableStateContainer(stateOrReader: ZergStateSource): ZergStateContainer | undefined {
+  return isZergStateContainer(stateOrReader) ? stateOrReader : undefined;
+}
+
+function isZergStateContainer(value: ZergStateSource): value is ZergStateContainer {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as Partial<ZergStateContainer>).read === 'function'
+    && typeof (value as Partial<ZergStateContainer>).snapshot === 'function'
+    && typeof (value as Partial<ZergStateContainer>).replace === 'function'
+    && typeof (value as Partial<ZergStateContainer>).update === 'function';
+}
+
+export function createPiZergCommandHandler(
+  stateOrReader: ZergStateSource,
+  options: ZergCommandHandlerOptions = {},
+): ZergPiCommandHandler {
+  const scaffoldHandler = createZergCommandHandler(stateOrReader, options);
 
   return async (input: string, context: StructuralPiCommandContext): Promise<void> => {
     const result = await scaffoldHandler(input);
@@ -220,7 +351,11 @@ export function createPiZergCommandHandler(stateOrReader: ZergState | (() => Zer
   };
 }
 
-function resolveZergStateSnapshot(stateOrReader: ZergState | (() => ZergState)): ZergState {
+function resolveZergStateSnapshot(stateOrReader: ZergStateSource): ZergState {
+  if (isZergStateContainer(stateOrReader)) {
+    return stateOrReader.snapshot();
+  }
+
   const state = typeof stateOrReader === 'function' ? stateOrReader() : stateOrReader;
   return snapshotZergState(state);
 }

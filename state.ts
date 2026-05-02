@@ -1,4 +1,4 @@
-import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type HookLifecycleEvent, type PermissionModeState, type TaskRecord, type TeamIdentity, type ZergContext, type ZergExtensionFields, type ZergState, type ZergStateContainer, type ZergStatePatch, type ZergStateUpdateOptions, type ZergTreeNode } from './types.js';
+import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeState, type TaskRecord, type TeamIdentity, type TeamKind, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStatePatch, type ZergStateUpdateOptions, type ZergTreeNode } from './types.js';
 
 const DEFAULT_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 
@@ -170,6 +170,246 @@ export function replaceSharedZergState(nextState: Partial<ZergState> = createZer
   return readSharedZergState();
 }
 
+
+export interface ZergRuntimeTransitionOptions {
+  now?: () => Date;
+  maxEvents?: number;
+}
+
+export function applyRuntimeTransition(
+  state: ZergState,
+  transition: ZergRuntimeTransition,
+  options: ZergRuntimeTransitionOptions = {},
+): ZergState {
+  const timestamp = resolveTransitionTimestamp(state, transition, options);
+
+  return updateZergState(state, (base) => {
+    const revision = base.revision + 1;
+    const mode = resolveRuntimeMode(base.mode, transition);
+    const status = resolveTransitionStatus(base, transition);
+    const health = resolveTransitionHealth(base, transition);
+    const activity = transition.activity?.trim() || defaultRuntimeActivity(transition.action);
+    const runtime = buildRuntimeState(getExistingRuntime(base, transition), transition, timestamp, mode, health, activity);
+    const event: HookLifecycleEvent = {
+      id: `runtime-${revision}`,
+      type: transition.entity,
+      message: formatRuntimeEventMessage(transition, activity),
+      status,
+      action: transition.action,
+      health,
+      mode,
+      sequence: revision,
+      revision,
+      createdAt: timestamp,
+      ...(transition.entity === 'agent' ? { agentId: transition.id } : { teamId: transition.id }),
+    };
+
+    if (transition.entity === 'agent') {
+      return {
+        agents: {
+          ...base.agents,
+          [transition.id]: buildAgentIdentity(base.agents[transition.id], transition, status, runtime),
+        },
+        events: appendRuntimeEvent(base.events, event, options.maxEvents),
+        mode,
+      };
+    }
+
+    return {
+      teams: {
+        ...base.teams,
+        [transition.id]: buildTeamIdentity(base.teams[transition.id], transition, status, runtime),
+      },
+      events: appendRuntimeEvent(base.events, event, options.maxEvents),
+      mode,
+    };
+  }, { updatedAt: timestamp });
+}
+
+export function replayRuntimeTransitions(
+  seed: Partial<ZergState> | ZergState,
+  transitions: readonly ZergRuntimeTransition[],
+  options: ZergRuntimeTransitionOptions = {},
+): ZergState {
+  return transitions.reduce((current, transition) => applyRuntimeTransition(current, transition, options), createZergState(seed));
+}
+
+
+function resolveTransitionTimestamp(
+  state: ZergState,
+  transition: ZergRuntimeTransition,
+  options: ZergRuntimeTransitionOptions,
+): string {
+  return transition.at ?? options.now?.().toISOString() ?? state.metadata.updatedAt;
+}
+
+function resolveRuntimeMode(stateMode: PermissionModeState, transition: ZergRuntimeTransition): ZergRuntimeModeContext {
+  return {
+    automation: transition.mode?.automation ?? stateMode.automation,
+    interventionEnabled: transition.mode?.interventionEnabled ?? stateMode.interventionEnabled,
+    contextId: transition.contextId ?? transition.mode?.contextId ?? stateMode.contextId,
+  };
+}
+
+function getExistingRuntime(state: ZergState, transition: ZergRuntimeTransition): ZergRuntimeState | undefined {
+  return transition.entity === 'agent' ? state.agents[transition.id]?.runtime : state.teams[transition.id]?.runtime;
+}
+
+function resolveTransitionStatus(state: ZergState, transition: ZergRuntimeTransition): AgentStatus {
+  if (transition.status) {
+    return transition.status;
+  }
+
+  switch (transition.action) {
+    case 'start':
+    case 'progress':
+      return 'running';
+    case 'stop':
+      return 'done';
+    case 'fail':
+      return 'failed';
+    case 'reset':
+      return 'idle';
+    case 'create':
+      return getExistingStatus(state, transition) ?? 'idle';
+  }
+}
+
+function getExistingStatus(state: ZergState, transition: ZergRuntimeTransition): AgentStatus | undefined {
+  return transition.entity === 'agent' ? state.agents[transition.id]?.status : state.teams[transition.id]?.status;
+}
+
+function resolveTransitionHealth(state: ZergState, transition: ZergRuntimeTransition): ZergRuntimeHealth {
+  if (transition.health) {
+    return transition.health;
+  }
+
+  switch (transition.action) {
+    case 'start':
+    case 'progress':
+      return 'healthy';
+    case 'stop':
+      return 'stopped';
+    case 'fail':
+      return 'failed';
+    case 'reset':
+      return 'unknown';
+    case 'create':
+      return getExistingRuntime(state, transition)?.health ?? 'unknown';
+  }
+}
+
+function buildRuntimeState(
+  existing: ZergRuntimeState | undefined,
+  transition: ZergRuntimeTransition,
+  timestamp: string,
+  mode: ZergRuntimeModeContext,
+  health: ZergRuntimeHealth,
+  activity: string,
+): ZergRuntimeState {
+  const createdAt = existing?.createdAt ?? timestamp;
+
+  if (transition.action === 'reset') {
+    return {
+      createdAt,
+      updatedAt: timestamp,
+      health,
+      mode,
+      lastActivity: activity,
+      lastActivityAt: timestamp,
+    };
+  }
+
+  return {
+    createdAt,
+    updatedAt: timestamp,
+    startedAt: transition.action === 'start' ? timestamp : existing?.startedAt,
+    stoppedAt: transition.action === 'stop' || transition.action === 'fail' ? timestamp : existing?.stoppedAt,
+    lastActivity: activity,
+    lastActivityAt: timestamp,
+    health,
+    mode,
+  };
+}
+
+function buildAgentIdentity(
+  existing: AgentIdentity | undefined,
+  transition: ZergRuntimeTransition,
+  status: AgentStatus,
+  runtime: ZergRuntimeState,
+): AgentIdentity {
+  return {
+    ...(existing ?? {}),
+    id: transition.id,
+    label: transition.label?.trim() || existing?.label || transition.id,
+    kind: isAgentKind(transition.kind) ? transition.kind : existing?.kind ?? 'subagent',
+    status,
+    parentId: transition.parentId ?? existing?.parentId,
+    teamId: transition.teamId ?? existing?.teamId,
+    childIds: mergeStrings(existing?.childIds, transition.childIds),
+    contextId: transition.contextId ?? existing?.contextId,
+    runtime,
+  };
+}
+
+function buildTeamIdentity(
+  existing: TeamIdentity | undefined,
+  transition: ZergRuntimeTransition,
+  status: AgentStatus,
+  runtime: ZergRuntimeState,
+): TeamIdentity {
+  return {
+    ...(existing ?? {}),
+    id: transition.id,
+    label: transition.label?.trim() || existing?.label || transition.id,
+    kind: isTeamKind(transition.kind) ? transition.kind : existing?.kind ?? 'team',
+    status,
+    leaderAgentId: transition.leaderAgentId ?? existing?.leaderAgentId,
+    memberAgentIds: mergeStrings(existing?.memberAgentIds, transition.memberAgentIds) ?? [],
+    parentTeamId: transition.parentTeamId ?? existing?.parentTeamId,
+    taskIds: mergeStrings(existing?.taskIds, transition.taskIds),
+    runtime,
+  };
+}
+
+function appendRuntimeEvent(events: readonly HookLifecycleEvent[], event: HookLifecycleEvent, maxEvents = 100): HookLifecycleEvent[] {
+  return [...cloneEvents(events), cloneEvent(event)].slice(-Math.max(1, maxEvents));
+}
+
+function formatRuntimeEventMessage(transition: ZergRuntimeTransition, activity: string): string {
+  return `${transition.entity} ${transition.id} ${transition.action}: ${activity}`;
+}
+
+function defaultRuntimeActivity(action: ZergRuntimeTransition['action']): string {
+  switch (action) {
+    case 'create':
+      return 'created';
+    case 'start':
+      return 'started';
+    case 'progress':
+      return 'progress updated';
+    case 'stop':
+      return 'stopped';
+    case 'fail':
+      return 'failed';
+    case 'reset':
+      return 'reset';
+  }
+}
+
+function isAgentKind(value: ZergRuntimeTransition['kind']): value is AgentKind {
+  return value === 'subagent' || value === 'teammate' || value === 'team-leader';
+}
+
+function isTeamKind(value: ZergRuntimeTransition['kind']): value is TeamKind {
+  return value === 'team' || value === 'squad' || value === 'worktree';
+}
+
+function mergeStrings(existing: string[] | undefined, incoming: string[] | undefined): string[] | undefined {
+  const merged = [...new Set([...(existing ?? []), ...(incoming ?? [])])];
+  return merged.length > 0 ? merged : undefined;
+}
+
 function cloneAgents(agents: Record<string, AgentIdentity> = {}): Record<string, AgentIdentity> {
   return Object.fromEntries(Object.entries(agents).map(([id, agent]) => [id, cloneAgent(agent)]));
 }
@@ -194,6 +434,7 @@ function cloneAgent(agent: AgentIdentity): AgentIdentity {
   return {
     ...agent,
     childIds: cloneArray(agent.childIds),
+    runtime: cloneOptional(agent.runtime, cloneRuntimeState),
     metadata: cloneOptional(agent.metadata, cloneExtensionFields),
     extensions: cloneOptional(agent.extensions, cloneExtensionFields),
   };
@@ -213,6 +454,7 @@ function cloneTeam(team: TeamIdentity): TeamIdentity {
     ...team,
     memberAgentIds: [...team.memberAgentIds],
     taskIds: cloneArray(team.taskIds),
+    runtime: cloneOptional(team.runtime, cloneRuntimeState),
     metadata: cloneOptional(team.metadata, cloneExtensionFields),
     extensions: cloneOptional(team.extensions, cloneExtensionFields),
   };
@@ -228,7 +470,21 @@ function cloneTreeNode(node: ZergTreeNode): ZergTreeNode {
 }
 
 function cloneEvent(event: HookLifecycleEvent): HookLifecycleEvent {
-  return { ...event };
+  return {
+    ...event,
+    mode: cloneOptional(event.mode, cloneRuntimeMode),
+  };
+}
+
+function cloneRuntimeState(runtime: ZergRuntimeState): ZergRuntimeState {
+  return {
+    ...runtime,
+    mode: cloneRuntimeMode(runtime.mode),
+  };
+}
+
+function cloneRuntimeMode(mode: ZergRuntimeModeContext): ZergRuntimeModeContext {
+  return { ...mode };
 }
 
 function cloneMode(mode?: Partial<PermissionModeState>): PermissionModeState {
