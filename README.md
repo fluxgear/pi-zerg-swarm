@@ -2,7 +2,7 @@
 
 `pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
 
-> v0.3.0 status: parse/thinking-step milestone complete on top of the command-surface and types/state scaffold. Slash-free Pi command registration, `/zerg` aliases, scaffold help/status/tree output, deterministic thinking-step parsing with source-line IDs, status prefixes/aliases, checkbox precedence, text renderers, deterministic state schema metadata, snapshot-safe state container APIs, team/tree helpers, and registration disposal cleanup are present; real subagent spawning, team loops, task queues, live overlays, and intervention controls are planned but not implemented yet.
+> v0.4.1 status: audit bugfix and release-hygiene patch complete on top of the command-surface, types/state, parse/thinking-step, and internal-patch scaffold. Package metadata, command/status/help output, README current-release wording, changelog top entry, and tests now align on v0.4.1; slash-free Pi command registration, `/zerg` aliases, scaffold help/status/tree output, deterministic thinking-step parsing with source-line IDs, status prefixes/aliases, checkbox precedence, text renderers, deterministic state schema metadata, snapshot-safe state container APIs, team/tree helpers, registration disposal cleanup, safe Pi event-bus emit/subscription observation, duplicate patch suppression, and rollback/disposal behavior are present; real subagent spawning, team loops, task queues, live overlays, and intervention controls are planned but not implemented yet.
 
 ## Commands
 
@@ -10,7 +10,7 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v0.3.0 these commands display scaffold help, status, tree, or deterministic thinking-step parser output through Pi command handlers backed by snapshot-safe state helpers.
+At v0.4.1 these commands display scaffold help, status, tree, or deterministic thinking-step parser output through Pi command handlers backed by snapshot-safe state helpers, and the extension safely observes Pi event-bus emit/subscription activity when an event bus is available.
 
 ## Architecture
 
@@ -65,15 +65,16 @@ npm run build
 npm test
 ```
 
-`npm run build` performs strict TypeScript no-emit checking. `npm test` runs the parser plus command-surface, v0.2.0 state/container, registration snapshot, v0.3.0 thinking-step parser, and render tests with Node's built-in test runner and `tsx`.
+`npm run build` performs strict TypeScript no-emit checking. `npm test` runs the parser plus command-surface, v0.2.0 state/container, registration snapshot, v0.3.0 thinking-step parser, internal-patch event-bus wrapping/duplicate/rollback/dispose, v0.4.1 release-hygiene version-surface assertions, and render tests with Node's built-in test runner and `tsx`.
 
 ## Roadmap
 
 - v0.1.0: command surface hardening (completed)
 - v0.2.0: richer types and state (completed)
-- v0.3.0: baseline thinking-step parser hardening and Pi command integration (current release)
-- v0.4.0: Pi internal bridge validation
-- v0.5.0: render and tree visibility
+- v0.3.0: baseline thinking-step parser hardening and Pi command integration (completed)
+- v0.4.0: Pi internal bridge validation and safe event-bus observation (completed)
+- v0.4.1: audit bugfix and release-hygiene version-surface consistency (current release)
+- v0.5.0: render and tree visibility expansion
 - v0.6.0+: subagent runtime, monitoring, intervention, and package readiness
 
 ## License

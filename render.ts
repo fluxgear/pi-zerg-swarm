@@ -11,7 +11,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const tasks = Object.values(state.tasks);
   const running = agents.filter((agent) => agent.status === 'running').length;
   const blocked = [...agents, ...tasks].filter((item) => item.status === 'blocked' || item.status === 'needs-attention').length;
-  return fit(`zerg v0.3.0 command surface | agents ${agents.length} (${running} running) | tasks ${tasks.length} | blocked ${blocked} | mode ${state.mode.automation}`, options.width);
+  return fit(`zerg v0.4.1 command surface | agents ${agents.length} (${running} running) | tasks ${tasks.length} | blocked ${blocked} | mode ${state.mode.automation}`, options.width);
 }
 
 export function renderAgentTree(state: ZergState, options: RenderOptions = {}): string {
@@ -84,12 +84,12 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v0.3.0 command-surface scaffold',
+    'pi-zerg-swarm v0.4.1 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
-    'Available now: slash-free Pi command registration, aliases, scaffold status/tree output, thinking-step parsing, and text rendering.',
-    'Not implemented yet: real subagent spawning, team runtime, task queues, Pi internal monkey patches, or live TUI overlays.',
+    'Available now: slash-free Pi command registration, aliases, scaffold status/tree output, thinking-step parsing, text rendering, and safe Pi event-bus emit/subscription observation.',
+    'Not implemented yet: real subagent spawning, team runtime, task queues, live TUI overlays, or manual/automation intervention controls.',
   ].join('\n');
 }
 

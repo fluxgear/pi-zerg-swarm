@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to semantic versioning after the bootstrap line is established.
 
+
+## [0.4.1] - 2026-05-02
+
+### Fixed
+
+- Fixed audit release-hygiene drift by aligning package metadata, command/status/help output, README current-release wording, tests, and the top changelog section on v0.4.1.
+- Clarified this patch as a consistency-only audit bugfix while preserving v0.4.0 as the historical internal-patch milestone.
+
+## [0.4.0] - 2026-05-01
+
+### Added
+
+- Added safe Pi event-bus internal bridge validation for emit and subscription observation, including focused regression coverage for forwarding `eventBus.on(...)` subscriptions and preserving original disposable return values.
+- Added regression coverage for duplicate controllers sharing one Pi event bus so duplicate installation does not double-observe subscriptions or restore the active wrapper.
+
+### Changed
+
+- Promoted command/status/help/docs public version surfaces to v0.4.0 for the internal patch milestone.
+
+### Fixed
+
+- Preserved event-bus wrapper behavior after duplicate-controller disposal and verified no subscription telemetry is recorded after the active patch is disposed.
+
 ## [0.3.0] - 2026-05-01
 
 ### Added

@@ -23,11 +23,17 @@ function createCommandSurfaceState(): ZergState {
   });
 }
 
+interface FakePiSubscription {
+  disposed: boolean;
+  disposeCount: number;
+  dispose(): void;
+}
+
 interface FakePiEventBus {
   emit(eventName: unknown, ...args: unknown[]): number;
-  on(eventName: unknown, handler: (...args: unknown[]) => unknown): { dispose(): void };
+  on(eventName: unknown, handler: (...args: unknown[]) => unknown): FakePiSubscription;
   emitted: Array<{ eventName: unknown; args: unknown[] }>;
-  subscriptions: Array<{ eventName: unknown; handler: (...args: unknown[]) => unknown }>;
+  subscriptions: Array<{ eventName: unknown; handler: (...args: unknown[]) => unknown; disposable: FakePiSubscription }>;
 }
 
 function createFakePiEventBus(): FakePiEventBus {
@@ -39,12 +45,17 @@ function createFakePiEventBus(): FakePiEventBus {
       return eventBus.emitted.length;
     },
     on(eventName, handler) {
-      eventBus.subscriptions.push({ eventName, handler });
-      return {
+      const disposable: FakePiSubscription = {
+        disposed: false,
+        disposeCount: 0,
         dispose() {
-          // Fake Pi event-bus subscriptions are inert for these structural tests.
+          disposable.disposed = true;
+          disposable.disposeCount += 1;
         },
       };
+
+      eventBus.subscriptions.push({ eventName, handler, disposable });
+      return disposable;
     },
   };
 
@@ -269,6 +280,50 @@ test('installInternalPatch wraps Pi event bus once and restores on dispose', () 
   reinstalled.dispose();
 });
 
+test('installInternalPatch observes event-bus subscriptions once and preserves disposables', () => {
+  const state = createZergState();
+  const eventBus = createFakePiEventBus();
+  const originalOn = eventBus.on;
+  const first = installInternalPatch({ events: eventBus }, state, {
+    now: () => new Date('2026-04-30T00:00:00.000Z'),
+  });
+  const wrappedOn = eventBus.on;
+  const duplicate = installInternalPatch({ events: eventBus }, state);
+
+  assert.equal(first.installed, true);
+  assert.equal(duplicate.installed, false);
+
+  const handler = () => 'handled';
+  const subscription = eventBus.on('agent:started', handler);
+
+  assert.equal(eventBus.subscriptions.length, 1);
+  assert.equal(eventBus.subscriptions[0]?.eventName, 'agent:started');
+  assert.equal(eventBus.subscriptions[0]?.handler, handler);
+  assert.equal(subscription, eventBus.subscriptions[0]?.disposable);
+
+  subscription.dispose();
+  assert.equal(subscription.disposed, true);
+  assert.equal(subscription.disposeCount, 1);
+
+  assert.equal(state.events.filter((event) => event.message.includes('event bus subscription: agent:started')).length, 1);
+
+  duplicate.dispose();
+  assert.equal(eventBus.on, wrappedOn);
+
+  eventBus.on('agent:continued', () => undefined);
+  assert.equal(state.events.filter((event) => event.message.includes('event bus subscription: agent:continued')).length, 1);
+
+  first.dispose();
+  assert.equal(eventBus.on, originalOn);
+
+  const eventCountAfterDispose = state.events.length;
+  eventBus.on('agent:stopped', () => undefined);
+
+  assert.equal(eventBus.subscriptions.length, 3);
+  assert.equal(state.events.length, eventCountAfterDispose);
+  assert.equal(state.events.filter((event) => event.message.includes('event bus subscription: agent:stopped')).length, 0);
+});
+
 test('installInternalPatch duplicate controllers do not double-wrap or restore active patch', () => {
   const state = createZergState();
   const eventBus = createFakePiEventBus();
@@ -383,7 +438,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.4.0 internal patch unavailable; command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.4.1 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -396,11 +451,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.4.0 internal patch unavailable; command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.4.1 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.4.0 internal patch unavailable; command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.4.1 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -622,7 +677,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v0.3.0 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v0.4.1 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -641,7 +696,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
   try {
     assert.equal(registration.patchInstalled, true);
     assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
-    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v0.4.0 internal patch path active']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v0.4.1 internal patch path active']);
 
     eventBus.emit('zerg:smoke');
 
@@ -661,7 +716,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
     });
 
     assert.equal(notifications.length, 1);
-    assert.ok(notifications[0]?.message.includes('zerg v0.3.0 command surface'));
+    assert.ok(notifications[0]?.message.includes('zerg v0.4.1 command surface'));
     assert.equal(notifications[0]?.type, 'info');
   } finally {
     registration.dispose();
