@@ -43,30 +43,49 @@ export interface ZergRuntimeState {
   stoppedAt?: string;
   lastActivityAt?: string;
   lastActivity?: string;
+  lastActivitySequence?: number;
+  lastActivityRevision?: number;
   health: ZergRuntimeHealth;
   mode: ZergRuntimeModeContext;
 }
 
-export interface ZergRuntimeTransition {
-  entity: ZergRuntimeEntity;
+interface ZergRuntimeTransitionBase {
   action: ZergRuntimeTransitionAction;
   id: string;
   label?: string;
-  kind?: AgentKind | TeamKind;
   status?: AgentStatus;
   health?: ZergRuntimeHealth;
   activity?: string;
   at?: string;
   mode?: Partial<ZergRuntimeModeContext>;
   contextId?: string;
+}
+
+export interface ZergAgentRuntimeTransition extends ZergRuntimeTransitionBase {
+  entity: 'agent';
+  kind?: AgentKind;
   parentId?: string;
   childIds?: string[];
   teamId?: string;
+  leaderAgentId?: never;
+  memberAgentIds?: never;
+  parentTeamId?: never;
+  taskIds?: never;
+}
+
+export interface ZergTeamRuntimeTransition extends ZergRuntimeTransitionBase {
+  entity: 'team';
+  kind?: TeamKind;
   leaderAgentId?: string;
   memberAgentIds?: string[];
   parentTeamId?: string;
   taskIds?: string[];
+  parentId?: never;
+  childIds?: never;
+  teamId?: never;
 }
+
+export type ZergRuntimeTransition = ZergAgentRuntimeTransition | ZergTeamRuntimeTransition;
 
 export interface AgentIdentity {
   id: string;

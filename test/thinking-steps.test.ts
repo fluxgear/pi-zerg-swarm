@@ -12,6 +12,50 @@ type AssertAssignable<T extends true> = T;
 type ContainerReadReturnsState = AssertAssignable<ReturnType<ZergStateContainer['read']> extends ZergState ? true : false>;
 type RegistrationStateExposesSnapshot = AssertAssignable<ZergExtensionRegistration['state'] extends ZergState ? true : false>;
 
+const VALID_AGENT_RUNTIME_TRANSITION = {
+  entity: 'agent',
+  action: 'create',
+  id: 'agent-valid',
+  kind: 'subagent',
+  parentId: 'root',
+} satisfies ZergRuntimeTransition;
+
+const VALID_TEAM_RUNTIME_TRANSITION = {
+  entity: 'team',
+  action: 'create',
+  id: 'team-valid',
+  kind: 'team',
+  memberAgentIds: ['agent-valid'],
+} satisfies ZergRuntimeTransition;
+
+const INVALID_AGENT_TEAM_KIND_TRANSITION = {
+  entity: 'agent',
+  action: 'create',
+  id: 'agent-invalid-kind',
+  kind: 'team',
+} as const;
+
+const INVALID_AGENT_TEAM_FIELDS_TRANSITION = {
+  entity: 'agent',
+  action: 'create',
+  id: 'agent-invalid-fields',
+  leaderAgentId: 'lead-1',
+} as const;
+
+const INVALID_TEAM_AGENT_FIELDS_TRANSITION = {
+  entity: 'team',
+  action: 'create',
+  id: 'team-invalid-fields',
+  parentId: 'parent-1',
+} as const;
+
+type _assertInvalidAgentTeamKindTransition = AssertAssignable<typeof INVALID_AGENT_TEAM_KIND_TRANSITION extends ZergRuntimeTransition ? false : true>;
+type _assertInvalidAgentTeamFieldsTransition = AssertAssignable<typeof INVALID_AGENT_TEAM_FIELDS_TRANSITION extends ZergRuntimeTransition ? false : true>;
+type _assertInvalidTeamAgentFieldsTransition = AssertAssignable<typeof INVALID_TEAM_AGENT_FIELDS_TRANSITION extends ZergRuntimeTransition ? false : true>;
+
+void VALID_AGENT_RUNTIME_TRANSITION;
+void VALID_TEAM_RUNTIME_TRANSITION;
+
 function createCommandSurfaceState(): ZergState {
   return createZergState({
     agents: {
@@ -448,7 +492,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.6.0 internal patch unavailable; command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.6.1 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -461,11 +505,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.6.0 internal patch unavailable; command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.6.1 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.6.0 internal patch unavailable; command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.6.1 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -764,7 +808,7 @@ test('render monitoring summarizes runtime health activity without mutation', ()
   const status = renderStatusLine(state, { width: 240 });
   const tree = renderAgentTree(state, { width: 240 });
 
-  assert.ok(status.includes('zerg v0.6.0 command surface'));
+  assert.ok(status.includes('zerg v0.6.1 command surface'));
   assert.ok(status.includes('agents 1 (1 running)'));
   assert.ok(status.includes('teams 1 (0 running)'));
   assert.ok(status.includes('unhealthy 1'));
@@ -772,6 +816,92 @@ test('render monitoring summarizes runtime health activity without mutation', ()
   assert.ok(tree.includes('Worker [subagent/running] {health:healthy last:editing state}'));
   assert.ok(tree.includes('team Ops [team/failed] {health:failed last:blocked on review}'));
   assert.equal(JSON.stringify(state), before);
+});
+
+test('renderStatusLine uses deterministic latest runtime ordering when timestamps tie', () => {
+  let state = createZergState();
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'create', id: 'worker', label: 'Worker', at: '2026-05-02T23:20:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'team', action: 'create', id: 'ops', label: 'Operations', at: '2026-05-02T23:20:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'progress', id: 'worker', activity: 'agent progress', at: '2026-05-02T23:20:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'team', action: 'progress', id: 'ops', activity: 'team review', at: '2026-05-02T23:20:00.000Z' });
+
+  const status = renderStatusLine(state, { width: 240 });
+
+  assert.equal(state.agents.worker?.runtime?.lastActivitySequence, 3);
+  assert.equal(state.teams.ops?.runtime?.lastActivitySequence, 4);
+  assert.ok(status.includes('last Operations: team review'));
+});
+
+test('renderStatusLine falls back to newest displayable runtime activity when latest sanitizes to empty', () => {
+  let state = createZergState();
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'create', id: 'worker', label: 'Worker', at: '2026-05-02T23:22:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'team', action: 'create', id: 'ops', label: 'Ops', at: '2026-05-02T23:22:30.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'progress', id: 'worker', activity: 'editing state', at: '2026-05-02T23:23:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'team', action: 'progress', id: 'ops', activity: String.fromCharCode(0), at: '2026-05-02T23:24:00.000Z' });
+
+  const status = renderStatusLine(state, { width: 240 });
+
+  assert.ok(status.includes('last Worker: editing state'));
+  assert.ok(!status.includes('last Ops:'));
+});
+
+test('explicit-tree rendering resolves referenced live agent and team runtimes', () => {
+  let state = createZergState();
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'create', id: 'worker', label: 'Worker', at: '2026-05-02T23:21:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'start', id: 'worker', at: '2026-05-02T23:21:30.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'progress', id: 'worker', activity: 'editing state', at: '2026-05-02T23:22:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'team', action: 'create', id: 'ops', label: 'Operations', memberAgentIds: ['worker'], at: '2026-05-02T23:23:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'team', action: 'fail', id: 'ops', activity: 'blocked on review', at: '2026-05-02T23:24:00.000Z' });
+
+  state = upsertTreeNode(state, {
+    id: 'ref-worker',
+    kind: 'agent',
+    label: 'Worker node',
+    status: 'running',
+    refId: 'worker',
+    childIds: [],
+  });
+  state = upsertTreeNode(state, {
+    id: 'ops',
+    kind: 'team',
+    label: 'Operations node',
+    status: 'running',
+    childIds: [],
+  });
+
+  const tree = renderAgentTree(state, { width: 240 });
+
+  assert.ok(tree.includes('agent Worker node [running] {health:healthy last:editing state}'));
+  assert.ok(tree.includes('team Operations node [running] {health:failed last:blocked on review}'));
+});
+
+test('runtime activity sanitizes control whitespace to keep status and tree output one line each', () => {
+  const multilineActivity = 'line one\nline two\tline three';
+  let state = createZergState();
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'create', id: 'worker', label: 'Worker', at: '2026-05-02T23:25:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'progress', id: 'worker', activity: multilineActivity, at: '2026-05-02T23:25:30.000Z' });
+  state = upsertTreeNode(state, {
+    id: 'worker-runtime',
+    kind: 'agent',
+    label: 'Worker node',
+    status: 'running',
+    refId: 'worker',
+    childIds: [],
+  });
+
+  const status = renderStatusLine(state, { width: 160 });
+  const tree = renderAgentTree(state, { width: 160 });
+  const narrowStatus = renderStatusLine(state, { width: 60 });
+  const narrowTree = renderAgentTree(state, { width: 60 });
+
+  assert.equal(status.split('\n').length, 1);
+  assert.equal(tree.split('\n').length, 2);
+  assert.ok(status.includes('last Worker: line one line two line three'));
+  assert.ok(tree.includes('line one line two line three'));
+  assert.equal(narrowStatus.split('\n').length, 1);
+  assert.equal(narrowTree.split('\n').length, 2);
+  assert.ok(narrowStatus.length <= 60);
+  assert.ok(Math.max(...narrowTree.split('\n').map((line) => line.length)) <= 60);
 });
 
 test('deriveThinkingSteps parses numbered reasoning steps with source-line IDs', () => {
@@ -917,7 +1047,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v0.6.0 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v0.6.1 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -937,8 +1067,8 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
   try {
     assert.equal(registration.patchInstalled, true);
     assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
-    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v0.6.0 internal patch path active']);
-    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v0.6.0 internal patch path active']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v0.6.1 internal patch path active']);
+    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v0.6.1 internal patch path active']);
 
     eventBus.emit('zerg:smoke');
 
@@ -962,7 +1092,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
     });
 
     assert.equal(notifications.length, 1);
-    assert.ok(notifications[0]?.message.includes('zerg v0.6.0 command surface'));
+    assert.ok(notifications[0]?.message.includes('zerg v0.6.1 command surface'));
     assert.equal(notifications[0]?.type, 'info');
   } finally {
     registration.dispose();

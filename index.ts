@@ -100,8 +100,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v0.6.0 internal patch path active'
-        : 'pi-zerg-swarm v0.6.0 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v0.6.1 internal patch path active'
+        : 'pi-zerg-swarm v0.6.1 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -296,17 +296,18 @@ function parseRuntimeTransition(entity: ZergRuntimeEntity, payload: string): Run
   }
 
   const text = rest.join(' ').trim();
+  const common = {
+    action,
+    id,
+    ...(action === 'create' && text ? { label: text } : {}),
+    ...((action === 'progress' || action === 'fail') && text ? { activity: text } : {}),
+  } as const;
 
-  return {
-    ok: true,
-    transition: {
-      entity,
-      action,
-      id,
-      ...(action === 'create' && text ? { label: text } : {}),
-      ...((action === 'progress' || action === 'fail') && text ? { activity: text } : {}),
-    },
-  };
+  if (entity === 'agent') {
+    return { ok: true, transition: { entity: 'agent', ...common } };
+  }
+
+  return { ok: true, transition: { entity: 'team', ...common } };
 }
 
 function tokenizeRuntimePayload(payload: string): string[] {

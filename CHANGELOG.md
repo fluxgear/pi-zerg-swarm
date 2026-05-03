@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to semantic versioning after the bootstrap line is established.
 
 
+## [Unreleased]
+
+## [0.6.1] - 2026-05-02
+
+### Fixed
+
+- Fixed v0.6.1 audit regressions in runtime monitoring: same-timestamp lifecycle activity ordering, explicit-tree runtime hints, sanitized runtime activity output, and fallback to the newest displayable activity.
+## [0.6.0] - 2026-05-02
+
+### Added
+
+- Added subagent runtime and monitoring state for agent/team lifecycle transitions, runtime health, task/activity snapshots, and shared Pi command/event-bus reporting.
+- Added fake-Pi lifecycle and monitoring regression coverage for `/zerg` agent/team create/progress/stop flows, latest activity, and tree runtime hints.
+
+### Changed
+
+- Promoted package metadata and command/status/help/test version surfaces to v0.6.0 for the subagent runtime and monitoring milestone.
+
+### Known Limitations
+
+- Manual Pi host command/runtime validation has been performed for /zerg help/status/tree and agent/team lifecycle commands in a tmux pseudo-TTY; live TUI overlay/intervention validation has not been performed, so avoid claiming live overlay validation has passed.
+
 ## [0.5.1] - 2026-05-02
 
 ### Fixed

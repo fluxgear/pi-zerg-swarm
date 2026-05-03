@@ -2,7 +2,7 @@
 
 `pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
 
-> v0.5.1 status: audit bugfix patch on top of the v0.5.0 render/tree visibility release. Package metadata, command/status/help output, README current-release wording, changelog top entry, and tests now align on v0.5.1; slash-free Pi command registration, `/zerg` aliases, scaffold help/status/tree output, deterministic thinking-step parsing with source-line IDs, status prefixes/aliases, checkbox precedence, text renderers, deterministic state schema metadata, snapshot-safe state container APIs, team/tree helpers, registration disposal cleanup, safe Pi event-bus emit/subscription observation, duplicate patch suppression, rollback/disposal behavior, expanded tree rendering, fallback `AgentIdentity.childIds` hierarchy, explicit missing-child markers, durable render regression coverage, and bounded/truncated output are present. Manual Pi overlay verification has not been performed; real subagent spawning, team loops, task queues, live overlays, and intervention controls are planned but not implemented yet.
+> v0.6.1 status: runtime lifecycle transitions and monitoring/status/tree output are implemented for agent/team command flows, covered by fake-Pi and Node tests, and aligned with package metadata. This release includes slash-free Pi command registration, `/zerg` aliases, deterministic thinking-step parsing with source-line IDs, snapshot-safe state helpers, event-bus observation, expanded tree rendering, explicit missing-child markers, and runtime health/activity summaries. Manual Pi host command/runtime validation has been performed in a tmux pseudo-TTY against the Pi-loaded extension; live TUI overlays, intervention controls, and manual/automation switching remain planned and unvalidated.
 
 ## Commands
 
@@ -10,7 +10,7 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v0.5.1 these commands display scaffold help, status, expanded tree visibility, or deterministic thinking-step parser output through Pi command handlers backed by snapshot-safe state helpers, and the extension safely observes Pi event-bus emit/subscription activity when an event bus is available.
+At v0.6.1 these commands display scaffold help, status, expanded tree visibility, deterministic thinking-step parser output, and agent/team runtime lifecycle monitoring through Pi command handlers backed by snapshot-safe shared state; the extension safely observes Pi event-bus emit/subscription activity when an event bus is available.
 
 ## Architecture
 
@@ -65,7 +65,7 @@ npm run build
 npm test
 ```
 
-`npm run build` performs strict TypeScript no-emit checking. `npm test` runs the parser plus command-surface, v0.2.0 state/container, registration snapshot, v0.3.0 thinking-step parser, internal-patch event-bus wrapping/duplicate/rollback/dispose, v0.4.1 release-hygiene assertions, v0.5.1 public version-surface assertions, and render regression tests with Node's built-in test runner and `tsx`.
+`npm run build` performs strict TypeScript no-emit checking. `npm test` runs parser plus command-surface coverage, v0.2.0 state/container behavior, registration snapshot semantics, v0.3.0 thinking-step parser coverage, internal-patch event-bus wrapping/duplicate/rollback/dispose paths, v0.4.1 release-hygiene assertions, v0.5.1 render regressions, and v0.6.1 lifecycle/monitoring/shared-state coverage with Node's built-in test runner and `tsx`.
 
 ## Roadmap
 
@@ -75,8 +75,10 @@ npm test
 - v0.4.0: Pi internal bridge validation and safe event-bus observation (completed)
 - v0.4.1: audit bugfix and release-hygiene version-surface consistency (completed)
 - v0.5.0: render and tree visibility expansion with explicit tree, fallback hierarchy, safety markers, and truncation bounds (completed)
-- v0.5.1: audit bugfix patch for fallback childIds hierarchy, explicit missing-child markers, and durable render regressions (current release)
-- v0.6.0+: subagent runtime, monitoring, intervention, and package readiness
+- v0.5.1: audit bugfix patch for fallback childIds hierarchy, explicit missing-child markers, and durable render regressions (completed)
+- v0.6.1: subagent runtime lifecycle and monitoring/status/tree command surfaces (current release)
+- v0.7.0: intervention controls plus manual/automation switching
+- v1.0.0-rc.1+: package readiness and release hardening
 
 ## License
 

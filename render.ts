@@ -18,7 +18,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const blocked = [...agents, ...tasks, ...teams].filter((item) => item.status === 'blocked' || item.status === 'needs-attention').length;
   const latestActivity = renderLatestRuntimeActivity([...agents, ...teams]);
   const activity = latestActivity ? ` | last ${latestActivity}` : '';
-  return fit(`zerg v0.6.0 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | mode ${snapshot.mode?.automation ?? 'manual'}`, options.width);
+  return fit(`zerg v0.6.1 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | mode ${snapshot.mode?.automation ?? 'manual'}`, options.width);
 }
 
 export function renderAgentTree(state: ZergState, options: RenderOptions = {}): string {
@@ -31,7 +31,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
   const selectedNodeId = snapshot.selectedNodeId;
 
   if (treeNodes.length > 0) {
-    return renderExplicitTree(treeNodes, width, selectedNodeId);
+    return renderExplicitTree(treeNodes, width, selectedNodeId, agents, teams);
   }
 
   if (agents.length === 0 && tasks.length === 0 && teams.length === 0) {
@@ -220,7 +220,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v0.6.0 command-surface scaffold',
+    'pi-zerg-swarm v0.6.1 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
@@ -251,13 +251,21 @@ function renderTaskLine(task: TaskRecord, width: number, prefix: string, selecte
   return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, task.id))} task ${safeLabel(task.title, task.id)} [${status}]${blockers}`, width);
 }
 
-function renderExplicitTree(nodes: ZergTreeNode[], width: number, selectedNodeId?: string): string {
+function renderExplicitTree(
+  nodes: ZergTreeNode[],
+  width: number,
+  selectedNodeId: string | undefined,
+  agents: AgentIdentity[],
+  teams: TeamIdentity[],
+): string {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const childrenByParent = new Map<string, ZergTreeNode[]>();
   const missingChildrenByParent = new Map<string, string[]>();
   const referenced = new Set<string>();
   const visited = new Set<string>();
   const lines = ['zerg tree'];
+  const agentById = new Map(agents.map((agent) => [agent.id, agent]));
+  const teamById = new Map(teams.map((team) => [team.id, team]));
 
   for (const node of nodes) {
     for (const childId of uniqueStrings(node.childIds)) {
@@ -290,7 +298,18 @@ function renderExplicitTree(nodes: ZergTreeNode[], width: number, selectedNodeId
       return;
     }
 
-    if (!pushRenderLine(lines, renderTreeNodeLine(node, width, `${indent}├─`, selectedNodeId, node.parentId && !nodeById.has(node.parentId) ? node.parentId : undefined), width)) {
+    if (!pushRenderLine(
+      lines,
+      renderTreeNodeLine(
+        node,
+        width,
+        `${indent}├─`,
+        selectedNodeId,
+        node.parentId && !nodeById.has(node.parentId) ? node.parentId : undefined,
+        findExplicitTreeRuntimeRef(node, agentById, teamById),
+      ),
+      width,
+    )) {
       return;
     }
 
@@ -332,11 +351,37 @@ function renderExplicitTree(nodes: ZergTreeNode[], width: number, selectedNodeId
   return lines.map((line) => fit(line, width)).join('\n');
 }
 
-function renderTreeNodeLine(node: ZergTreeNode, width: number, prefix: string, selectedNodeId?: string, orphanParent?: string): string {
+function renderTreeNodeLine(
+  node: ZergTreeNode,
+  width: number,
+  prefix: string,
+  selectedNodeId: string | undefined,
+  orphanParent: string | undefined,
+  runtime: AgentIdentity['runtime'] | TeamIdentity['runtime'] | undefined,
+): string {
   const status = node.status ?? 'unknown';
   const marker = statusMarker(status, isSelected(selectedNodeId, node.id, node.refId));
   const orphan = orphanParent ? ` orphan-parent:${orphanParent}` : '';
-  return fit(`${prefix}${marker} ${node.kind} ${safeLabel(node.label, node.id)} [${status}]${orphan}`, width);
+  const runtimeHint = renderRuntimeHint(runtime);
+  return fit(`${prefix}${marker} ${node.kind} ${safeLabel(node.label, node.id)} [${status}]${orphan}${runtimeHint}`, width);
+}
+
+function findExplicitTreeRuntimeRef(
+  node: ZergTreeNode,
+  agentById: Map<string, AgentIdentity>,
+  teamById: Map<string, TeamIdentity>,
+): AgentIdentity['runtime'] | TeamIdentity['runtime'] | undefined {
+  if (node.kind === 'agent') {
+    const agentByRef = node.refId ? agentById.get(node.refId) : undefined;
+    return (agentByRef ?? agentById.get(node.id))?.runtime;
+  }
+
+  if (node.kind === 'team') {
+    const teamByRef = node.refId ? teamById.get(node.refId) : undefined;
+    return (teamByRef ?? teamById.get(node.id))?.runtime;
+  }
+
+  return undefined;
 }
 
 function renderMissingChildLine(childId: string, width: number, prefix: string): string {
@@ -375,21 +420,54 @@ function renderRuntimeHint(runtime: AgentIdentity['runtime'] | TeamIdentity['run
   }
 
   const parts = [`health:${runtime.health}`];
+  const lastActivity = runtime.lastActivity ? sanitizeRuntimeActivity(runtime.lastActivity) : '';
 
-  if (runtime.lastActivity) {
-    parts.push(`last:${runtime.lastActivity}`);
+  if (lastActivity) {
+    parts.push(`last:${lastActivity}`);
   }
 
   return ` {${parts.join(' ')}}`;
 }
 
 function renderLatestRuntimeActivity(items: Array<AgentIdentity | TeamIdentity>): string | undefined {
-  const latest = items
-    .map((item) => ({ label: safeLabel(item.label, item.id), runtime: item.runtime }))
+  const latestDisplayable = items
+    .map((item) => ({
+      label: safeLabel(item.label, item.id),
+      runtime: item.runtime,
+    }))
     .filter((item): item is { label: string; runtime: NonNullable<AgentIdentity['runtime']> } => Boolean(item.runtime?.lastActivity))
-    .sort((left, right) => runtimeActivityTimestamp(right.runtime).localeCompare(runtimeActivityTimestamp(left.runtime)))[0];
+    .map((item) => ({
+      label: item.label,
+      runtime: item.runtime,
+      activity: sanitizeRuntimeActivity(item.runtime.lastActivity ?? ''),
+    }))
+    .filter((item): item is { label: string; runtime: NonNullable<AgentIdentity['runtime']>; activity: string } => Boolean(item.activity))
+    .sort((left, right) => runtimeActivityCompare(left.runtime, right.runtime))[0];
 
-  return latest ? `${latest.label}: ${latest.runtime.lastActivity}` : undefined;
+  if (!latestDisplayable) {
+    return undefined;
+  }
+
+  return `${latestDisplayable.label}: ${latestDisplayable.activity}`;
+}
+
+function runtimeActivityCompare(
+  left: NonNullable<AgentIdentity['runtime']>,
+  right: NonNullable<AgentIdentity['runtime']>,
+): number {
+  const timestampCompare = runtimeActivityTimestamp(right).localeCompare(runtimeActivityTimestamp(left));
+  if (timestampCompare !== 0) {
+    return timestampCompare;
+  }
+
+  const leftSequence = left.lastActivitySequence ?? left.lastActivityRevision ?? 0;
+  const rightSequence = right.lastActivitySequence ?? right.lastActivityRevision ?? 0;
+  const sequenceCompare = rightSequence - leftSequence;
+  if (sequenceCompare !== 0) {
+    return sequenceCompare;
+  }
+
+  return (right.lastActivity ?? '').localeCompare(left.lastActivity ?? '');
 }
 
 function runtimeActivityTimestamp(runtime: NonNullable<AgentIdentity['runtime']>): string {
@@ -410,6 +488,13 @@ function fit(value: string, width = DEFAULT_WIDTH): string {
     return value;
   }
   return `${value.slice(0, width - 1)}…`;
+}
+
+function sanitizeRuntimeActivity(activity: string): string {
+  return activity
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function recordValues<T>(values: Record<string, T> | undefined): T[] {

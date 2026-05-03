@@ -1,4 +1,4 @@
-import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeState, type TaskRecord, type TeamIdentity, type TeamKind, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStatePatch, type ZergStateUpdateOptions, type ZergTreeNode } from './types.js';
+import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeState, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStatePatch, type ZergStateUpdateOptions, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
 
 const DEFAULT_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 
@@ -189,7 +189,15 @@ export function applyRuntimeTransition(
     const status = resolveTransitionStatus(base, transition);
     const health = resolveTransitionHealth(base, transition);
     const activity = transition.activity?.trim() || defaultRuntimeActivity(transition.action);
-    const runtime = buildRuntimeState(getExistingRuntime(base, transition), transition, timestamp, mode, health, activity);
+    const runtime = buildRuntimeState(
+      getExistingRuntime(base, transition),
+      transition,
+      timestamp,
+      mode,
+      health,
+      activity,
+      revision,
+    );
     const event: HookLifecycleEvent = {
       id: `runtime-${revision}`,
       type: transition.entity,
@@ -306,8 +314,15 @@ function buildRuntimeState(
   mode: ZergRuntimeModeContext,
   health: ZergRuntimeHealth,
   activity: string,
+  activitySequence: number,
 ): ZergRuntimeState {
   const createdAt = existing?.createdAt ?? timestamp;
+  const activityMetadata = {
+    lastActivity: activity,
+    lastActivityAt: timestamp,
+    lastActivitySequence: activitySequence,
+    lastActivityRevision: activitySequence,
+  } as const;
 
   if (transition.action === 'reset') {
     return {
@@ -315,8 +330,7 @@ function buildRuntimeState(
       updatedAt: timestamp,
       health,
       mode,
-      lastActivity: activity,
-      lastActivityAt: timestamp,
+      ...activityMetadata,
     };
   }
 
@@ -325,8 +339,7 @@ function buildRuntimeState(
     updatedAt: timestamp,
     startedAt: transition.action === 'start' ? timestamp : existing?.startedAt,
     stoppedAt: transition.action === 'stop' || transition.action === 'fail' ? timestamp : existing?.stoppedAt,
-    lastActivity: activity,
-    lastActivityAt: timestamp,
+    ...activityMetadata,
     health,
     mode,
   };
@@ -334,7 +347,7 @@ function buildRuntimeState(
 
 function buildAgentIdentity(
   existing: AgentIdentity | undefined,
-  transition: ZergRuntimeTransition,
+  transition: ZergAgentRuntimeTransition,
   status: AgentStatus,
   runtime: ZergRuntimeState,
 ): AgentIdentity {
@@ -354,7 +367,7 @@ function buildAgentIdentity(
 
 function buildTeamIdentity(
   existing: TeamIdentity | undefined,
-  transition: ZergRuntimeTransition,
+  transition: ZergTeamRuntimeTransition,
   status: AgentStatus,
   runtime: ZergRuntimeState,
 ): TeamIdentity {
