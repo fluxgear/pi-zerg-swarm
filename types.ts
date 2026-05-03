@@ -30,9 +30,32 @@ export interface ZergContext {
   metadata?: ZergExtensionFields;
 }
 
+export type PermissionModeController = 'operator' | 'automation';
+
+export type PermissionModeInterventionKind = 'agent' | 'subagent' | 'leader';
+
+export interface PermissionModeIntervention {
+  kind: PermissionModeInterventionKind;
+  targetId: string;
+  targetLabel?: string;
+  teamId?: string;
+  leaderAgentId?: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface PermissionModeSnapshot {
+  automation: AutomationMode;
+  interventionEnabled: boolean;
+  controller: PermissionModeController;
+  contextId?: string;
+}
+
 export interface ZergRuntimeModeContext {
   automation: AutomationMode;
   interventionEnabled: boolean;
+  controller: PermissionModeController;
+  activeIntervention?: PermissionModeIntervention;
   contextId?: string;
 }
 
@@ -137,6 +160,8 @@ export interface HookLifecycleEvent {
   action?: ZergRuntimeTransitionAction;
   health?: ZergRuntimeHealth;
   mode?: ZergRuntimeModeContext;
+  intervention?: PermissionModeIntervention;
+  previousMode?: PermissionModeSnapshot;
   sequence?: number;
   agentId?: string;
   taskId?: string;
@@ -146,10 +171,27 @@ export interface HookLifecycleEvent {
   createdAt: string;
 }
 
-export interface PermissionModeState {
+export interface PermissionModeState extends PermissionModeSnapshot {
+  activeIntervention?: PermissionModeIntervention;
+  previousMode?: PermissionModeSnapshot;
+}
+
+export interface PermissionModeTransitionInput {
   automation: AutomationMode;
+  controller: PermissionModeController;
   interventionEnabled: boolean;
   contextId?: string;
+  reason?: string;
+  clearActiveIntervention?: boolean;
+}
+
+export interface PermissionModeInterventionInput {
+  kind: PermissionModeInterventionKind;
+  targetId: string;
+  targetLabel?: string;
+  teamId?: string;
+  leaderAgentId?: string;
+  message: string;
 }
 
 export interface ZergTreeNode {

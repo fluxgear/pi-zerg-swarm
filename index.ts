@@ -1,8 +1,8 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
 import { renderAgentTree, renderHelp, renderStatusLine } from './render.js';
-import { applyRuntimeTransition, createZergStateContainer, readSharedZergState, replaceSharedZergState, snapshotZergState } from './state.js';
-import { ZERG_COMMANDS, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type ZergCommandName, type ZergCommandResult, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer } from './types.js';
+import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, readSharedZergState, replaceSharedZergState, snapshotZergState } from './state.js';
+import { ZERG_COMMANDS, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type ZergCommandName, type ZergCommandResult, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer } from './types.js';
 
 export interface ZergCommandHandlerOptions {
   now?: () => Date;
@@ -24,12 +24,32 @@ export interface ZergExtensionRegistration {
   dispose(): void;
 }
 
-type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team';
+type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene';
 type ZergCommandDispatcher = (payload: string) => ZergCommandResult;
 type RuntimeParseResult = { ok: false; output: string } | { ok: true; transition: ZergRuntimeTransition };
+
+type ModeTransitionAction = 'status' | 'manual' | 'assisted' | 'automatic' | 'revert';
+type ModeParseResult =
+  | { ok: false; output: string }
+  | { ok: true; action: ModeTransitionAction; reason?: string };
+type InterveneKind = 'agent' | 'subagent' | 'leader';
+type InterveneParseResult =
+  | { ok: false; output: string }
+  | {
+    ok: true;
+    kind: InterveneKind;
+    targetId: string;
+    targetLabel?: string;
+    teamId?: string;
+    leaderAgentId?: string;
+    message: string;
+  };
 type ZergStateSource = ZergState | (() => ZergState) | ZergStateContainer;
 
 const RUNTIME_WRITABLE_STATE_ERROR = 'Runtime lifecycle commands require writable zerg state.';
+const MAX_INTERVENTION_MESSAGE_LENGTH = 240;
+const MAX_INTERVENTION_MESSAGE_LENGTH_FOR_REASONS = 140;
+
 
 interface NormalizedZergCommandInput {
   topic: string;
@@ -100,8 +120,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v0.6.1 internal patch path active'
-        : 'pi-zerg-swarm v0.6.1 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v0.7.0 internal patch path active'
+        : 'pi-zerg-swarm v0.7.0 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -189,6 +209,8 @@ export function createZergCommandHandler(
     },
     agent: (payload: string) => dispatchRuntimeCommand(stateOrReader, 'agent', payload, options),
     team: (payload: string) => dispatchRuntimeCommand(stateOrReader, 'team', payload, options),
+    mode: (payload: string) => dispatchModeCommand(stateOrReader, payload, options),
+    intervene: (payload: string) => dispatchInterventionCommand(stateOrReader, payload, options),
   };
 
   return (input?: string): ZergCommandResult => {
@@ -247,7 +269,7 @@ function isZergInvocationToken(value: string): value is ZergCommandName {
 }
 
 function isZergCommandTopic(value: string): value is ZergCommandTopic {
-  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agent' || value === 'team';
+  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene';
 }
 
 function dispatchRuntimeCommand(
@@ -282,6 +304,246 @@ function dispatchRuntimeCommand(
     output: `${parsed.transition.entity} ${parsed.transition.id} ${parsed.transition.action} applied.\n${renderStatusLine(snapshot, { width: PI_COMMAND_OUTPUT_WIDTH })}`,
   };
 }
+
+
+function dispatchModeCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
+  const container = getWritableStateContainer(stateOrReader);
+
+  if (!container) {
+    return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
+  }
+
+  const parsed = parseModeCommand(payload);
+
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  if (parsed.action === 'status') {
+    return {
+      ok: true,
+      output: renderStatusLine(container.read(), { width: PI_COMMAND_OUTPUT_WIDTH }),
+    };
+  }
+
+  if (parsed.action === 'revert') {
+    const current = container.read();
+    const previousMode = current.mode.previousMode;
+
+    if (!previousMode) {
+      return { ok: false, output: 'No prior mode snapshot to revert to.' };
+    }
+
+    const nextState = applyModeTransition(
+      current,
+      {
+        automation: previousMode.automation,
+        controller: previousMode.controller,
+        interventionEnabled: previousMode.interventionEnabled,
+        contextId: previousMode.contextId,
+        reason: parsed.reason,
+        clearActiveIntervention: true,
+      },
+      {
+        now: options.now,
+      },
+    );
+
+    const snapshot = container.replace(nextState);
+    if (options.syncSharedState) {
+      replaceSharedZergState(snapshot);
+    }
+
+    return { ok: true, output: renderModeTransitionStatus(snapshot, 'mode reverted') };
+  }
+
+  const transition: PermissionModeTransitionInput = {
+    automation: parsed.action,
+    controller: parsed.action === 'automatic' ? 'automation' : 'operator',
+    interventionEnabled: true,
+    reason: parsed.reason,
+    clearActiveIntervention: true,
+  };
+  const nextState = applyModeTransition(container.read(), transition, {
+    now: options.now,
+  });
+  const snapshot = container.replace(nextState);
+
+  if (options.syncSharedState) {
+    replaceSharedZergState(snapshot);
+  }
+
+  return { ok: true, output: renderModeTransitionStatus(snapshot, `mode set to ${parsed.action}`) };
+}
+
+function dispatchInterventionCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
+  const container = getWritableStateContainer(stateOrReader);
+
+  if (!container) {
+    return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
+  }
+
+  const parsed = parseInterventionCommand(container.read(), payload);
+
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  const nextState = applyInterventionRecord(
+    container.read(),
+    {
+      kind: parsed.kind,
+      targetId: parsed.targetId,
+      targetLabel: parsed.targetLabel,
+      teamId: parsed.teamId,
+      leaderAgentId: parsed.leaderAgentId,
+      message: parsed.message,
+    },
+    {
+      now: options.now,
+    },
+  );
+
+  const snapshot = container.replace(nextState);
+
+  if (options.syncSharedState) {
+    replaceSharedZergState(snapshot);
+  }
+
+  return {
+    ok: true,
+    output: parsed.kind === 'leader'
+      ? `intervention recorded against leader ${parsed.targetId} (team ${parsed.teamId}): ${parsed.message}`
+      : `intervention recorded against ${parsed.kind} ${parsed.targetId}: ${parsed.message}`,
+  };
+}
+
+
+function parseModeCommand(payload: string): ModeParseResult {
+  const [actionToken, ...rest] = tokenizeRuntimePayload(payload);
+  const normalizedAction = actionToken?.toLowerCase() ?? 'status';
+
+  if (normalizedAction === 'status' || normalizedAction === '') {
+    return { ok: true, action: 'status' };
+  }
+
+  if (!isModeTransitionAction(normalizedAction)) {
+    return { ok: false, output: `Unknown mode action: ${actionToken ?? ''}` };
+  }
+
+  const reason = normalizeInterventionText(rest.join(' '), MAX_INTERVENTION_MESSAGE_LENGTH_FOR_REASONS);
+
+  if (rest.length > 0 && !reason) {
+    return { ok: false, output: `mode reason exceeds ${MAX_INTERVENTION_MESSAGE_LENGTH_FOR_REASONS} characters or contains only control characters.` };
+  }
+
+  return { ok: true, action: normalizedAction, reason: reason || undefined };
+}
+
+function parseInterventionCommand(state: ZergState, payload: string): InterveneParseResult {
+  const [targetKindToken, id, ...messageTokens] = tokenizeRuntimePayload(payload);
+  const normalizedKind = targetKindToken?.toLowerCase();
+
+  if (!isInterventionKind(normalizedKind)) {
+    return { ok: false, output: `Unknown intervention target: ${targetKindToken ?? ''}` };
+  }
+
+  if (!id) {
+    return { ok: false, output: `intervene ${normalizedKind} requires an id.` };
+  }
+
+  const messageText = messageTokens.join(' ');
+  const message = normalizeInterventionText(messageText);
+  if (!messageText.trim()) {
+    return { ok: false, output: 'intervene requires a non-empty message.' };
+  }
+
+  if (!message) {
+    return { ok: false, output: `intervention message exceeds ${MAX_INTERVENTION_MESSAGE_LENGTH} characters or contains only control characters.` };
+  }
+
+  if (normalizedKind === 'leader') {
+    const team = state.teams[id];
+    if (!team) {
+      return { ok: false, output: `Cannot intervene leader for unknown team: ${id}` };
+    }
+
+    if (!team.leaderAgentId) {
+      return { ok: false, output: `Team ${id} has no leader to intervene.` };
+    }
+
+    const leader = state.agents[team.leaderAgentId];
+    if (!leader) {
+      return { ok: false, output: `Team ${id} leader ${team.leaderAgentId} is missing.` };
+    }
+
+    return {
+      ok: true,
+      kind: normalizedKind,
+      targetId: leader.id,
+      targetLabel: leader.label,
+      teamId: team.id,
+      leaderAgentId: leader.id,
+      message,
+    };
+  }
+
+  const agent = state.agents[id];
+  if (!agent) {
+    return { ok: false, output: `Cannot intervene ${normalizedKind} for unknown agent: ${id}` };
+  }
+
+  if (normalizedKind === 'subagent' && agent.kind !== 'subagent') {
+    return { ok: false, output: `intervene subagent requires target agent to be subagent: ${id}` };
+  }
+
+  return {
+    ok: true,
+    kind: normalizedKind,
+    targetId: id,
+    targetLabel: agent.label,
+    message,
+  };
+}
+
+function isModeTransitionAction(value: string): value is ModeTransitionAction {
+  return value === 'status' || value === 'manual' || value === 'assisted' || value === 'automatic' || value === 'revert';
+}
+
+function isInterventionKind(value: string | undefined): value is InterveneKind {
+  return value === 'agent' || value === 'subagent' || value === 'leader';
+}
+
+function renderModeTransitionStatus(state: ZergState, message: string): string {
+  return `${message}
+${renderStatusLine(state, { width: PI_COMMAND_OUTPUT_WIDTH })}`;
+}
+
+function normalizeInterventionText(input: string, maxLength = MAX_INTERVENTION_MESSAGE_LENGTH): string {
+  const sanitized = input
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!sanitized || sanitized.length === 0) {
+    return '';
+  }
+
+  if (sanitized.length > maxLength) {
+    return '';
+  }
+
+  return sanitized;
+}
+
 
 function parseRuntimeTransition(entity: ZergRuntimeEntity, payload: string): RuntimeParseResult {
   const [actionToken, id, ...rest] = tokenizeRuntimePayload(payload);

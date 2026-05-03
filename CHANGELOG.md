@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-03
+
+### Added
+
+- Added command-host control grammar for `/zerg mode status|manual|assisted|automatic|revert [reason]` and `/zerg intervene agent|subagent|leader ...` without enabling live external transport.
+- Added fake-Pi/shared-state regression coverage for registered command-host mode transitions and intervention recording paths.
+
+### Changed
+
+- Promoted package metadata and public version/help/status surfaces to v0.7.0.
+- Mode control now records auditable and reversible global `state.mode` transitions including controller and prior-mode snapshots.
+- Intervention records are sanitized and bounded before persistence, and rendered across status/help/tree surfaces with active target markers and previews.
+
+### Known Limitations
+
+- Live TUI overlays and chat/external process/network transport remain planned and unvalidated for this release.
+
 ## [0.6.1] - 2026-05-02
 
 ### Fixed

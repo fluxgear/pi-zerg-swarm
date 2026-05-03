@@ -12,13 +12,44 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const agents = recordValues(snapshot.agents);
   const tasks = recordValues(snapshot.tasks);
   const teams = recordValues(snapshot.teams);
+  const intervention = snapshot.mode?.activeIntervention;
+  const controller = snapshot.mode?.controller ?? 'operator';
   const runningAgents = agents.filter((agent) => agent.status === 'running').length;
   const runningTeams = teams.filter((team) => team.status === 'running').length;
   const unhealthy = [...agents, ...teams].filter(hasUnhealthyRuntime).length;
   const blocked = [...agents, ...tasks, ...teams].filter((item) => item.status === 'blocked' || item.status === 'needs-attention').length;
   const latestActivity = renderLatestRuntimeActivity([...agents, ...teams]);
   const activity = latestActivity ? ` | last ${latestActivity}` : '';
-  return fit(`zerg v0.6.1 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | mode ${snapshot.mode?.automation ?? 'manual'}`, options.width);
+  const control = `control ${controller}`;
+  const mode = `mode ${snapshot.mode?.automation ?? 'manual'}`;
+  const activeIntervention = intervention
+    ? ` | intervention ${intervention.kind} ${intervention.targetId} (${renderInterventionMessagePreview(intervention.message)})`
+    : ' | no active intervention';
+
+  return fit(
+    `zerg v0.7.0 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
+    options.width,
+  );
+}
+
+
+function getInterventionTargetIds(mode: ZergState['mode'] = { automation: 'manual', interventionEnabled: true, controller: 'operator' } as ZergState['mode']): Set<string> {
+  const targetIds = new Set<string>();
+  const targetId = mode.activeIntervention?.targetId;
+
+  if (targetId) {
+    targetIds.add(targetId);
+  }
+
+  return targetIds;
+}
+
+function renderInterventionMessagePreview(message: string, maxLength = 48): string {
+  if (message.length <= maxLength) {
+    return message;
+  }
+
+  return `${message.slice(0, maxLength - 1)}…`;
 }
 
 export function renderAgentTree(state: ZergState, options: RenderOptions = {}): string {
@@ -29,9 +60,10 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
   const teams = recordValues(snapshot.teams).sort(byLabel);
   const treeNodes = recordValues(snapshot.tree).sort(byLabel);
   const selectedNodeId = snapshot.selectedNodeId;
+  const interventionTargetIds = getInterventionTargetIds(snapshot.mode);
 
   if (treeNodes.length > 0) {
-    return renderExplicitTree(treeNodes, width, selectedNodeId, agents, teams);
+    return renderExplicitTree(treeNodes, width, selectedNodeId, agents, teams, interventionTargetIds);
   }
 
   if (agents.length === 0 && tasks.length === 0 && teams.length === 0) {
@@ -100,7 +132,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
       return;
     }
 
-    if (!pushRenderLine(lines, renderAgentLine(agent, width, `${indent}├─`, selectedNodeId), width)) {
+    if (!pushRenderLine(lines, renderAgentLine(agent, width, `${indent}├─`, selectedNodeId, interventionTargetIds), width)) {
       return;
     }
 
@@ -141,7 +173,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
       return;
     }
 
-    if (!pushRenderLine(lines, renderTeamLine(team, width, `${indent}├─`, selectedNodeId), width)) {
+    if (!pushRenderLine(lines, renderTeamLine(team, width, `${indent}├─`, selectedNodeId, interventionTargetIds), width)) {
       return;
     }
 
@@ -220,35 +252,37 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v0.6.1 command-surface scaffold',
+    'pi-zerg-swarm v0.7.0 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
     'Lifecycle syntax: /zerg agent create|start|progress|stop|fail|reset <agent-id> [label|activity]',
     'Lifecycle syntax: /zerg team create|start|progress|stop|fail|reset <team-id> [label|activity]',
-    'Available now: slash-free Pi command registration, aliases, lifecycle state updates, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
-    'Not implemented yet: external process spawning, task queues, live TUI overlays, or full manual/automation intervention controls.',
+    'Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]',
+    'Intervention syntax: /zerg intervene agent <agent-id> <message> | /zerg intervene subagent <agent-id> <message> | /zerg intervene leader <team-id> <message>',
+    'Available now: slash-free Pi command registration, aliases, lifecycle state updates, mode/intervention control commands, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
+    'Live TUI overlays and external process/network transport remain out of scope for this release.',
   ].join('\n');
 }
 
-function renderAgentLine(agent: AgentIdentity, width: number, prefix: string, selectedNodeId?: string): string {
+function renderAgentLine(agent: AgentIdentity, width: number, prefix: string, selectedNodeId: string | undefined, interventionTargetIds: Set<string> = new Set()): string {
   const kind = agent.kind ?? 'agent';
   const status = agent.status ?? 'unknown';
   const runtime = renderRuntimeHint(agent.runtime);
-  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, agent.id))} ${safeLabel(agent.label, agent.id)} [${kind}/${status}]${runtime}`, width);
+  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, agent.id), interventionTargetIds.has(agent.id))} ${safeLabel(agent.label, agent.id)} [${kind}/${status}]${runtime}`, width);
 }
 
-function renderTeamLine(team: TeamIdentity, width: number, prefix: string, selectedNodeId?: string): string {
+function renderTeamLine(team: TeamIdentity, width: number, prefix: string, selectedNodeId: string | undefined, interventionTargetIds: Set<string> = new Set()): string {
   const kind = team.kind ?? 'team';
   const status = team.status ?? 'unknown';
   const runtime = renderRuntimeHint(team.runtime);
-  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, team.id))} team ${safeLabel(team.label, team.id)} [${kind}/${status}]${runtime}`, width);
+  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, team.id), interventionTargetIds.has(team.id))} team ${safeLabel(team.label, team.id)} [${kind}/${status}]${runtime}`, width);
 }
 
 function renderTaskLine(task: TaskRecord, width: number, prefix: string, selectedNodeId?: string): string {
   const status = task.status ?? 'unknown';
   const blockers = task.blockedBy?.length ? ` blocked-by:${task.blockedBy.join(',')}` : '';
-  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, task.id))} task ${safeLabel(task.title, task.id)} [${status}]${blockers}`, width);
+  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, task.id), false)} task ${safeLabel(task.title, task.id)} [${status}]${blockers}`, width);
 }
 
 function renderExplicitTree(
@@ -257,6 +291,7 @@ function renderExplicitTree(
   selectedNodeId: string | undefined,
   agents: AgentIdentity[],
   teams: TeamIdentity[],
+  interventionTargetIds: Set<string>,
 ): string {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const childrenByParent = new Map<string, ZergTreeNode[]>();
@@ -305,6 +340,7 @@ function renderExplicitTree(
         width,
         `${indent}├─`,
         selectedNodeId,
+        interventionTargetIds,
         node.parentId && !nodeById.has(node.parentId) ? node.parentId : undefined,
         findExplicitTreeRuntimeRef(node, agentById, teamById),
       ),
@@ -356,11 +392,12 @@ function renderTreeNodeLine(
   width: number,
   prefix: string,
   selectedNodeId: string | undefined,
+  interventionTargetIds: Set<string>,
   orphanParent: string | undefined,
   runtime: AgentIdentity['runtime'] | TeamIdentity['runtime'] | undefined,
 ): string {
   const status = node.status ?? 'unknown';
-  const marker = statusMarker(status, isSelected(selectedNodeId, node.id, node.refId));
+  const marker = statusMarker(status, isSelected(selectedNodeId, node.id, node.refId), interventionTargetIds.has(node.id) || Boolean(node.refId && interventionTargetIds.has(node.refId)));
   const orphan = orphanParent ? ` orphan-parent:${orphanParent}` : '';
   const runtimeHint = renderRuntimeHint(runtime);
   return fit(`${prefix}${marker} ${node.kind} ${safeLabel(node.label, node.id)} [${status}]${orphan}${runtimeHint}`, width);
@@ -571,9 +608,13 @@ function uniqueStrings(values: string[] | undefined): string[] {
   return [...new Set(values ?? [])];
 }
 
-function statusMarker(status: string | undefined, selected: boolean): string {
+function statusMarker(status: string | undefined, selected: boolean, interventionTarget: boolean): string {
   if (selected) {
     return '▶';
+  }
+
+  if (interventionTarget) {
+    return '◉';
   }
 
   return status === 'running' ? '●' : ' ';

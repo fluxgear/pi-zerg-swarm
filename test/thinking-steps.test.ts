@@ -4,8 +4,8 @@ import test from 'node:test';
 import { createZergCommandHandler, registerZergSwarmExtension, type ZergExtensionRegistration } from '../index.js';
 import { installInternalPatch } from '../internal-patch.js';
 import { deriveThinkingSteps } from '../parse.js';
-import { renderAgentTree, renderStatusLine } from '../render.js';
-import { appendHookEvent, applyRuntimeTransition, createZergState, createZergStateContainer, getCurrentAgents, getCurrentMode, getCurrentTasks, getCurrentTeams, getCurrentTree, getSelectedTreeNode, readSharedZergState, replaceSharedZergState, replayRuntimeTransitions, resetZergState, selectNode, setMode, snapshotZergState, updateSharedZergState, updateZergState, upsertAgent, upsertTeam, upsertTreeNode } from '../state.js';
+import { renderAgentTree, renderHelp, renderStatusLine } from '../render.js';
+import { appendHookEvent, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergState, createZergStateContainer, getCurrentAgents, getCurrentMode, getCurrentTasks, getCurrentTeams, getCurrentTree, getSelectedTreeNode, readSharedZergState, replaceSharedZergState, replayRuntimeTransitions, resetZergState, selectNode, setMode, snapshotZergState, updateSharedZergState, updateZergState, upsertAgent, upsertTeam, upsertTreeNode } from '../state.js';
 import { ZERG_STATE_SCHEMA_VERSION, type HookLifecycleEvent, type StructuralPiCommandOptions, type TeamIdentity, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergTreeNode } from '../types.js';
 
 type AssertAssignable<T extends true> = T;
@@ -127,7 +127,7 @@ test('createZergState provides deterministic v0.2.0 defaults', () => {
   assert.deepEqual(state.teams, {});
   assert.deepEqual(state.tree, {});
   assert.deepEqual(state.events, []);
-  assert.deepEqual(state.mode, { automation: 'manual', interventionEnabled: true });
+  assert.deepEqual(state.mode, { automation: 'manual', interventionEnabled: true, controller: 'operator' });
   assert.deepEqual(state.metadata, { createdAt: '1970-01-01T00:00:00.000Z', updatedAt: '1970-01-01T00:00:00.000Z', resetCount: 0, source: undefined, labels: undefined, extensions: undefined });
   assert.deepEqual(resetZergState(), state);
 });
@@ -492,7 +492,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.6.1 internal patch unavailable; command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v0.7.0 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -505,11 +505,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.6.1 internal patch unavailable; command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v0.7.0 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.6.1 internal patch unavailable; command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v0.7.0 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -556,7 +556,7 @@ test('shared team tree helpers and readers return clones', () => {
 
     let state = createZergState({
       tasks: { task: rereadShared.tasks.task! },
-      mode: { automation: 'assisted', interventionEnabled: false },
+      mode: { automation: 'assisted', interventionEnabled: false, controller: 'operator' },
     });
     state = upsertTeam(state, team);
     state = upsertTreeNode(state, node);
@@ -650,6 +650,265 @@ test('replayRuntimeTransitions is deterministic and bounds transition events', (
   assert.deepEqual(first.events.map((event) => event.id), ['runtime-2', 'runtime-3']);
   assert.equal(first.agents.worker?.runtime?.lastActivity, 'editing state');
   assert.equal(first.agents.worker?.runtime?.health, 'healthy');
+});
+
+test('applyModeTransition records audit snapshots and active intervention clearing deterministically', () => {
+  const transitionAt = '2026-05-03T00:00:00.000Z';
+  const activeIntervention = {
+    kind: 'agent' as const,
+    targetId: 'worker',
+    targetLabel: 'Worker',
+    message: 'operator is reviewing',
+    createdAt: '2026-05-02T23:59:00.000Z',
+  };
+  const initial = createZergState({
+    mode: {
+      automation: 'assisted',
+      interventionEnabled: false,
+      controller: 'operator',
+      contextId: 'ctx-before',
+      activeIntervention,
+    },
+  });
+
+  const transitioned = applyModeTransition(
+    initial,
+    {
+      automation: 'automatic',
+      controller: 'automation',
+      interventionEnabled: true,
+      contextId: 'ctx-after',
+      reason: 'handoff accepted',
+      clearActiveIntervention: true,
+    },
+    { now: () => new Date(transitionAt) },
+  );
+
+  assert.equal(initial.mode.automation, 'assisted');
+  assert.equal(transitioned.revision, 1);
+  assert.equal(transitioned.metadata.updatedAt, transitionAt);
+  assert.deepEqual(transitioned.mode.previousMode, {
+    automation: 'assisted',
+    interventionEnabled: false,
+    controller: 'operator',
+    contextId: 'ctx-before',
+  });
+  assert.equal(transitioned.mode.automation, 'automatic');
+  assert.equal(transitioned.mode.controller, 'automation');
+  assert.equal(transitioned.mode.interventionEnabled, true);
+  assert.equal(transitioned.mode.contextId, 'ctx-after');
+  assert.equal(Object.hasOwn(transitioned.mode, 'activeIntervention'), false);
+
+  const event = transitioned.events[0]!;
+  assert.equal(event.id, 'mode-1');
+  assert.equal(event.type, 'mode');
+  assert.equal(event.createdAt, transitionAt);
+  assert.equal(event.message, 'mode transition assisted/operator -> automatic/automation: handoff accepted');
+  assert.deepEqual(event.previousMode, transitioned.mode.previousMode);
+  assert.equal(event.mode?.automation, 'automatic');
+  assert.equal(event.mode?.controller, 'automation');
+
+  const retained = applyModeTransition(
+    initial,
+    {
+      automation: 'manual',
+      controller: 'operator',
+      interventionEnabled: true,
+      clearActiveIntervention: false,
+    },
+    { now: () => new Date(transitionAt) },
+  );
+  assert.deepEqual(retained.mode.activeIntervention, activeIntervention);
+});
+
+test('applyInterventionRecord sanitizes messages and forces operator intervention state with audit payload', () => {
+  const interventionAt = '2026-05-03T00:05:00.000Z';
+  const previousMode = { automation: 'manual' as const, interventionEnabled: true, controller: 'operator' as const, contextId: 'ctx-manual' };
+  const initial = createZergState({
+    mode: {
+      automation: 'automatic',
+      interventionEnabled: false,
+      controller: 'automation',
+      previousMode,
+    },
+  });
+
+  const recorded = applyInterventionRecord(
+    initial,
+    {
+      kind: 'subagent',
+      targetId: 'worker',
+      targetLabel: 'Worker',
+      message: '  Needs\noperator\t\u0000 review  ',
+    },
+    { now: () => new Date(interventionAt) },
+  );
+
+  assert.equal(initial.mode.controller, 'automation');
+  assert.equal(recorded.mode.automation, 'automatic');
+  assert.equal(recorded.mode.controller, 'operator');
+  assert.equal(recorded.mode.interventionEnabled, true);
+  assert.deepEqual(recorded.mode.previousMode, previousMode);
+  assert.deepEqual(recorded.mode.activeIntervention, {
+    kind: 'subagent',
+    targetId: 'worker',
+    targetLabel: 'Worker',
+    message: 'Needs operator review',
+    createdAt: interventionAt,
+  });
+
+  const event = recorded.events[0]!;
+  assert.equal(event.id, 'permission-1');
+  assert.equal(event.type, 'permission');
+  assert.equal(event.message, 'intervention recorded: subagent worker');
+  assert.deepEqual(event.intervention, recorded.mode.activeIntervention);
+  assert.deepEqual(event.previousMode, previousMode);
+});
+
+test('createZergCommandHandler applies v0.7 mode status transitions and revert', () => {
+  const container = createZergStateContainer();
+  const timestamps = createNowSequence(
+    '2026-05-03T01:00:00.000Z',
+    '2026-05-03T01:01:00.000Z',
+    '2026-05-03T01:02:00.000Z',
+    '2026-05-03T01:03:00.000Z',
+  );
+  const handler = createZergCommandHandler(container, { now: timestamps });
+
+  const status = handler('/zerg mode status');
+  assert.equal(status.ok, true);
+  assert.ok(status.output.includes('control operator'));
+  assert.ok(status.output.includes('mode manual'));
+  assert.ok(status.output.includes('no active intervention'));
+
+  const rejectedRevert = handler('/zerg mode revert');
+  assert.equal(rejectedRevert.ok, false);
+  assert.equal(rejectedRevert.output, 'No prior mode snapshot to revert to.');
+
+  const manual = handler('/zerg mode manual confirmed');
+  assert.equal(manual.ok, true);
+  assert.ok(manual.output.includes('mode set to manual'));
+  assert.equal(container.snapshot().mode.controller, 'operator');
+
+  const automatic = handler('/zerg mode automatic "hands off"');
+  assert.equal(automatic.ok, true);
+  assert.ok(automatic.output.includes('mode set to automatic'));
+  assert.equal(container.snapshot().mode.automation, 'automatic');
+  assert.equal(container.snapshot().mode.controller, 'automation');
+
+  const assisted = handler('/zerg mode assisted operator-review');
+  assert.equal(assisted.ok, true);
+  assert.equal(container.snapshot().mode.automation, 'assisted');
+  assert.equal(container.snapshot().mode.controller, 'operator');
+  assert.deepEqual(container.snapshot().mode.previousMode, {
+    automation: 'automatic',
+    interventionEnabled: true,
+    controller: 'automation',
+    contextId: undefined,
+  });
+
+  const reverted = handler('/zerg mode revert rollback');
+  assert.equal(reverted.ok, true);
+  assert.ok(reverted.output.includes('mode reverted'));
+  assert.equal(container.snapshot().mode.automation, 'automatic');
+  assert.equal(container.snapshot().mode.controller, 'automation');
+  assert.deepEqual(container.snapshot().events.map((event) => event.type), ['mode', 'mode', 'mode', 'mode']);
+  assert.equal(container.snapshot().events.at(-1)?.message, 'mode transition assisted/operator -> automatic/automation: rollback');
+});
+
+test('createZergCommandHandler applies v0.7 intervention APIs and rejects invalid targets', () => {
+  const interventionAt = '2026-05-03T02:00:00.000Z';
+  const container = createZergStateContainer(createZergState({
+    agents: {
+      leader: { id: 'leader', label: 'Leader', kind: 'team-leader', status: 'running' },
+      worker: { id: 'worker', label: 'Worker', kind: 'subagent', status: 'running' },
+      teammate: { id: 'teammate', label: 'Teammate', kind: 'teammate', status: 'idle' },
+    },
+    teams: {
+      ops: { id: 'ops', label: 'Ops', kind: 'team', status: 'running', leaderAgentId: 'leader', memberAgentIds: ['worker'] },
+      leaderless: { id: 'leaderless', label: 'Leaderless', kind: 'team', status: 'idle', memberAgentIds: [] },
+      missingLeader: { id: 'missingLeader', label: 'Missing leader', kind: 'team', status: 'idle', leaderAgentId: 'ghost', memberAgentIds: [] },
+    },
+  }));
+  const handler = createZergCommandHandler(container, { now: () => new Date(interventionAt) });
+
+  const agentIntervention = handler('/zerg intervene agent leader Please review');
+  assert.equal(agentIntervention.ok, true);
+  assert.equal(agentIntervention.output, 'intervention recorded against agent leader: Please review');
+  assert.equal(container.snapshot().mode.activeIntervention?.targetId, 'leader');
+
+  const subagentIntervention = handler('/zerg intervene subagent worker Take over');
+  assert.equal(subagentIntervention.ok, true);
+  assert.equal(subagentIntervention.output, 'intervention recorded against subagent worker: Take over');
+  assert.equal(container.snapshot().mode.activeIntervention?.kind, 'subagent');
+  assert.equal(container.snapshot().mode.controller, 'operator');
+
+  const leaderIntervention = handler('/zerg intervene leader ops Lead please');
+  assert.equal(leaderIntervention.ok, true);
+  assert.equal(leaderIntervention.output, 'intervention recorded against leader leader (team ops): Lead please');
+  assert.deepEqual(container.snapshot().mode.activeIntervention, {
+    kind: 'leader',
+    targetId: 'leader',
+    targetLabel: 'Leader',
+    teamId: 'ops',
+    leaderAgentId: 'leader',
+    message: 'Lead please',
+    createdAt: interventionAt,
+  });
+
+  assert.deepEqual(container.snapshot().events.map((event) => event.type), ['permission', 'permission', 'permission']);
+  assert.equal(handler('/zerg intervene banana worker msg').output, 'Unknown intervention target: banana');
+  assert.equal(handler('/zerg intervene agent').output, 'intervene agent requires an id.');
+  assert.equal(handler('/zerg intervene agent worker').output, 'intervene requires a non-empty message.');
+  assert.equal(handler('/zerg intervene agent ghost msg').output, 'Cannot intervene agent for unknown agent: ghost');
+  assert.equal(handler('/zerg intervene subagent leader msg').output, 'intervene subagent requires target agent to be subagent: leader');
+  assert.equal(handler('/zerg intervene leader ghost msg').output, 'Cannot intervene leader for unknown team: ghost');
+  assert.equal(handler('/zerg intervene leader leaderless msg').output, 'Team leaderless has no leader to intervene.');
+  assert.equal(handler('/zerg intervene leader missingLeader msg').output, 'Team missingLeader leader ghost is missing.');
+  assert.equal(handler(`/zerg intervene agent worker ${'x'.repeat(241)}`).output, 'intervention message exceeds 240 characters or contains only control characters.');
+});
+
+test('render surfaces expose v0.7 control intervention status tree markers and help syntax', () => {
+  const idleState = createZergState();
+  const idleStatus = renderStatusLine(idleState, { width: 240 });
+  const idleHelp = renderHelp(idleState, { width: 240 });
+
+  assert.ok(idleStatus.includes('control operator'));
+  assert.ok(idleStatus.includes('mode manual'));
+  assert.ok(idleStatus.includes('no active intervention'));
+  assert.ok(idleHelp.includes('Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]'));
+  assert.ok(idleHelp.includes('Intervention syntax: /zerg intervene agent <agent-id> <message>'));
+
+  const activeState = createZergState({
+    agents: {
+      worker: { id: 'worker', label: 'Worker', kind: 'subagent', status: 'running' },
+    },
+    mode: {
+      automation: 'manual',
+      interventionEnabled: true,
+      controller: 'operator',
+      activeIntervention: {
+        kind: 'subagent',
+        targetId: 'worker',
+        targetLabel: 'Worker',
+        message: 'Please review the worker handoff now',
+        createdAt: '2026-05-03T02:30:00.000Z',
+      },
+    },
+  });
+  const activeStatus = renderStatusLine(activeState, { width: 240 });
+  const fallbackTree = renderAgentTree(activeState, { width: 240 });
+  const explicitTree = renderAgentTree(createZergState({
+    agents: activeState.agents,
+    mode: activeState.mode,
+    tree: {
+      workerNode: { id: 'workerNode', kind: 'agent', label: 'Worker node', status: 'running', refId: 'worker', childIds: [] },
+    },
+  }), { width: 240 });
+
+  assert.ok(activeStatus.includes('intervention subagent worker (Please review the worker handoff now)'));
+  assert.ok(fallbackTree.includes('◉ Worker [subagent/running]'));
+  assert.ok(explicitTree.includes('◉ agent Worker node [running]'));
 });
 
 test('createZergCommandHandler applies lifecycle commands only with writable state and command timestamps', () => {
@@ -798,6 +1057,108 @@ test('registered Pi command handlers mutate extension and shared lifecycle state
   }
 });
 
+test('registered Pi mode and intervention commands sync extension and shared state end to end', async () => {
+  replaceSharedZergState(createZergState({
+    agents: {
+      leader: { id: 'leader', label: 'Leader', kind: 'team-leader', status: 'running' },
+      worker: { id: 'worker', label: 'Worker', kind: 'subagent', status: 'running', teamId: 'ops' },
+    },
+    teams: {
+      ops: { id: 'ops', label: 'Operations', kind: 'team', status: 'running', leaderAgentId: 'leader', memberAgentIds: ['leader', 'worker'] },
+    },
+  }));
+
+  const registrations: Array<{ name: string; options: StructuralPiCommandOptions }> = [];
+  const notifications: Array<{ message: string; type?: string }> = [];
+  const registration = registerZergSwarmExtension({
+    registerCommand(name, options) {
+      registrations.push({ name, options });
+    },
+  }, {
+    now: createNowSequence(
+      '2026-05-03T03:00:00.000Z',
+      '2026-05-03T03:01:00.000Z',
+      '2026-05-03T03:02:00.000Z',
+    ),
+  });
+  const notifyContext = {
+    hasUI: true,
+    ui: {
+      notify(message: string, type?: string) {
+        notifications.push({ message, type });
+      },
+    },
+  };
+
+  try {
+    const handler = registrations[0]?.options.handler;
+    assert.ok(handler);
+
+    const commandOutput = async (input: string) => {
+      const start = notifications.length;
+      await handler(input, notifyContext);
+      return notifications[start] as { message: string; type?: string };
+    };
+
+    const automaticNotification = await commandOutput('/zerg mode automatic "hands off"');
+    const automaticState = registration.state;
+    const automaticSharedState = readSharedZergState();
+
+    assert.equal(automaticState.mode.automation, 'automatic');
+    assert.equal(automaticState.mode.controller, 'automation');
+    assert.equal(automaticSharedState.mode.automation, 'automatic');
+    assert.equal(automaticSharedState.mode.controller, 'automation');
+    assert.equal(automaticSharedState.events.at(-1)?.message, automaticState.events.at(-1)?.message);
+
+    const leaderNotification = await commandOutput('/zerg intervene leader ops "review worker handoff"');
+    const intervenedState = registration.state;
+    const intervenedSharedState = readSharedZergState();
+
+    assert.deepEqual(intervenedState.mode.activeIntervention, {
+      kind: 'leader',
+      targetId: 'leader',
+      targetLabel: 'Leader',
+      teamId: 'ops',
+      leaderAgentId: 'leader',
+      message: 'review worker handoff',
+      createdAt: '2026-05-03T03:01:00.000Z',
+    });
+    assert.equal(intervenedState.mode.automation, 'automatic');
+    assert.equal(intervenedState.mode.controller, 'operator');
+    assert.deepEqual(intervenedSharedState.mode, intervenedState.mode);
+    assert.equal(intervenedSharedState.events.at(-1)?.message, 'intervention recorded: leader leader');
+
+    const assistedNotification = await commandOutput('/zerg mode assisted operator-review');
+    const finalState = registration.state;
+    const finalSharedState = readSharedZergState();
+    const finalEvents = finalState.events.slice(-3);
+
+    assert.equal(finalState.mode.automation, 'assisted');
+    assert.equal(finalState.mode.controller, 'operator');
+    assert.equal(Object.hasOwn(finalState.mode, 'activeIntervention'), false);
+    assert.deepEqual(finalSharedState.mode, finalState.mode);
+    assert.deepEqual(finalSharedState.events.slice(-3), finalEvents);
+    assert.deepEqual(finalEvents.map((event) => event.type), ['mode', 'permission', 'mode']);
+    assert.deepEqual(finalEvents.map((event) => event.createdAt), [
+      '2026-05-03T03:00:00.000Z',
+      '2026-05-03T03:01:00.000Z',
+      '2026-05-03T03:02:00.000Z',
+    ]);
+    assert.deepEqual(finalEvents.map((event) => event.message), [
+      'mode transition manual/operator -> automatic/automation: hands off',
+      'intervention recorded: leader leader',
+      'mode transition automatic/operator -> assisted/operator: operator-review',
+    ]);
+    assert.ok(automaticNotification.message.includes('mode set to automatic'));
+    assert.ok(leaderNotification.message.includes('intervention recorded against leader leader (team ops): review worker handoff'));
+    assert.ok(assistedNotification.message.includes('mode set to assisted'));
+    assert.ok(notifications.every((notification) => notification.type === 'info'));
+  } finally {
+    registration.dispose();
+    replaceSharedZergState();
+  }
+});
+
 test('render monitoring summarizes runtime health activity without mutation', () => {
   let state = createZergState();
   state = applyRuntimeTransition(state, { entity: 'agent', action: 'create', id: 'worker', label: 'Worker', at: '2026-05-02T22:01:00.000Z' });
@@ -808,7 +1169,7 @@ test('render monitoring summarizes runtime health activity without mutation', ()
   const status = renderStatusLine(state, { width: 240 });
   const tree = renderAgentTree(state, { width: 240 });
 
-  assert.ok(status.includes('zerg v0.6.1 command surface'));
+  assert.ok(status.includes('zerg v0.7.0 command surface'));
   assert.ok(status.includes('agents 1 (1 running)'));
   assert.ok(status.includes('teams 1 (0 running)'));
   assert.ok(status.includes('unhealthy 1'));
@@ -1047,7 +1408,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v0.6.1 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v0.7.0 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -1067,8 +1428,8 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
   try {
     assert.equal(registration.patchInstalled, true);
     assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
-    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v0.6.1 internal patch path active']);
-    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v0.6.1 internal patch path active']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v0.7.0 internal patch path active']);
+    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v0.7.0 internal patch path active']);
 
     eventBus.emit('zerg:smoke');
 
@@ -1092,7 +1453,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
     });
 
     assert.equal(notifications.length, 1);
-    assert.ok(notifications[0]?.message.includes('zerg v0.6.1 command surface'));
+    assert.ok(notifications[0]?.message.includes('zerg v0.7.0 command surface'));
     assert.equal(notifications[0]?.type, 'info');
   } finally {
     registration.dispose();

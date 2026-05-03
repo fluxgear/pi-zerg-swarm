@@ -1,10 +1,11 @@
-import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeState, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStatePatch, type ZergStateUpdateOptions, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
+import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStatePatch, type ZergStateUpdateOptions, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
 
 const DEFAULT_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 
 const DEFAULT_MODE: PermissionModeState = {
   automation: 'manual',
   interventionEnabled: true,
+  controller: 'operator',
 };
 
 export function createZergState(seed: Partial<ZergState> = {}): ZergState {
@@ -120,6 +121,8 @@ export function selectNode(state: ZergState, selectedNodeId: string | undefined)
   return updateZergState(state, { selectedNodeId });
 }
 
+export const MAX_INTERVENTION_MESSAGE_LENGTH = 240;
+
 export function setMode(state: ZergState, mode: Partial<PermissionModeState>): ZergState {
   return updateZergState(state, {
     mode: {
@@ -127,6 +130,86 @@ export function setMode(state: ZergState, mode: Partial<PermissionModeState>): Z
       ...mode,
     },
   });
+}
+
+export function applyModeTransition(
+  state: ZergState,
+  transition: PermissionModeTransitionInput,
+  options: ZergRuntimeTransitionOptions = {},
+): ZergState {
+  const timestamp = resolveStateTransitionTimestamp(state, options);
+
+  return updateZergState(state, (base) => {
+    const revision = base.revision + 1;
+    const previousMode = clonePermissionModeSnapshot(base.mode);
+    const mode: PermissionModeState = {
+      ...base.mode,
+      automation: transition.automation,
+      controller: transition.controller,
+      interventionEnabled: transition.interventionEnabled,
+      contextId: transition.contextId ?? base.mode.contextId,
+      previousMode,
+      activeIntervention: transition.clearActiveIntervention === false ? base.mode.activeIntervention : undefined,
+    };
+
+    const event: HookLifecycleEvent = {
+      id: `mode-${revision}`,
+      type: 'mode',
+      message: buildModeTransitionMessage(previousMode, mode, transition),
+      sequence: revision,
+      revision,
+      createdAt: timestamp,
+      mode: cloneRuntimeMode(mode),
+      previousMode,
+    };
+
+    return {
+      mode,
+      events: appendRuntimeEvent(base.events, event, options.maxEvents),
+    };
+  }, { updatedAt: timestamp });
+}
+
+export function applyInterventionRecord(
+  state: ZergState,
+  intervention: PermissionModeInterventionInput,
+  options: ZergRuntimeTransitionOptions = {},
+): ZergState {
+  const timestamp = resolveStateTransitionTimestamp(state, options);
+
+  return updateZergState(state, (base) => {
+    const revision = base.revision + 1;
+    const sanitized = {
+      ...intervention,
+      message: sanitizeInterventionMessage(intervention.message),
+      createdAt: timestamp,
+    };
+
+    const mode: PermissionModeState = {
+      ...base.mode,
+      controller: 'operator',
+      interventionEnabled: true,
+      activeIntervention: sanitized,
+      previousMode: base.mode.previousMode,
+    };
+
+    const event: HookLifecycleEvent = {
+      id: `permission-${revision}`,
+      type: 'permission',
+      message: `intervention recorded: ${intervention.kind} ${intervention.targetId}`,
+      sequence: revision,
+      revision,
+      createdAt: timestamp,
+      mode: cloneRuntimeMode(mode),
+      intervention: sanitized,
+      previousMode: mode.previousMode,
+    };
+
+    return {
+      mode,
+      events: appendRuntimeEvent(base.events, event, options.maxEvents),
+    };
+  }, { updatedAt: timestamp });
 }
 
 export function resetZergState(seed?: Partial<ZergState>): ZergState {
@@ -243,6 +326,13 @@ export function replayRuntimeTransitions(
 }
 
 
+function resolveStateTransitionTimestamp(
+  state: ZergState,
+  options: ZergRuntimeTransitionOptions,
+): string {
+  return options.now?.().toISOString() ?? state.metadata.updatedAt;
+}
+
 function resolveTransitionTimestamp(
   state: ZergState,
   transition: ZergRuntimeTransition,
@@ -255,8 +345,28 @@ function resolveRuntimeMode(stateMode: PermissionModeState, transition: ZergRunt
   return {
     automation: transition.mode?.automation ?? stateMode.automation,
     interventionEnabled: transition.mode?.interventionEnabled ?? stateMode.interventionEnabled,
+    controller: transition.mode?.controller ?? stateMode.controller,
+    activeIntervention: transition.mode?.activeIntervention ?? stateMode.activeIntervention,
     contextId: transition.contextId ?? transition.mode?.contextId ?? stateMode.contextId,
   };
+}
+
+function buildModeTransitionMessage(
+  previousMode: PermissionModeSnapshot,
+  nextMode: PermissionModeState,
+  transition: PermissionModeTransitionInput,
+): string {
+  const baseMessage = `mode transition ${previousMode.automation}/${previousMode.controller} -> ${nextMode.automation}/${nextMode.controller}`;
+  return transition.reason ? `${baseMessage}: ${transition.reason}` : baseMessage;
+}
+
+function sanitizeInterventionMessage(message: string, maxLength: number = MAX_INTERVENTION_MESSAGE_LENGTH): string {
+  const sanitized = message
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return sanitized.slice(0, maxLength);
 }
 
 function getExistingRuntime(state: ZergState, transition: ZergRuntimeTransition): ZergRuntimeState | undefined {
@@ -486,6 +596,8 @@ function cloneEvent(event: HookLifecycleEvent): HookLifecycleEvent {
   return {
     ...event,
     mode: cloneOptional(event.mode, cloneRuntimeMode),
+    intervention: cloneOptional(event.intervention, clonePermissionModeIntervention),
+    previousMode: cloneOptional(event.previousMode, clonePermissionModeSnapshot),
   };
 }
 
@@ -497,11 +609,44 @@ function cloneRuntimeState(runtime: ZergRuntimeState): ZergRuntimeState {
 }
 
 function cloneRuntimeMode(mode: ZergRuntimeModeContext): ZergRuntimeModeContext {
-  return { ...mode };
+  return {
+    ...mode,
+    activeIntervention: cloneOptional(mode.activeIntervention, clonePermissionModeIntervention),
+  };
 }
 
 function cloneMode(mode?: Partial<PermissionModeState>): PermissionModeState {
-  return { ...DEFAULT_MODE, ...(mode ?? {}) };
+  const cloned: PermissionModeState = {
+    ...DEFAULT_MODE,
+    ...mode,
+  };
+
+  if (mode?.activeIntervention !== undefined) {
+    cloned.activeIntervention = clonePermissionModeIntervention(mode.activeIntervention);
+  } else {
+    delete cloned.activeIntervention;
+  }
+
+  if (mode?.previousMode !== undefined) {
+    cloned.previousMode = clonePermissionModeSnapshot(mode.previousMode);
+  } else {
+    delete cloned.previousMode;
+  }
+
+  return cloned;
+}
+
+function clonePermissionModeIntervention(intervention?: PermissionModeIntervention): PermissionModeIntervention {
+  return { ...intervention! };
+}
+
+function clonePermissionModeSnapshot(snapshot?: PermissionModeSnapshot): PermissionModeSnapshot {
+  return {
+    automation: snapshot?.automation ?? DEFAULT_MODE.automation,
+    interventionEnabled: snapshot?.interventionEnabled ?? DEFAULT_MODE.interventionEnabled,
+    controller: snapshot?.controller ?? DEFAULT_MODE.controller,
+    contextId: snapshot?.contextId,
+  };
 }
 
 function cloneContext(context?: ZergContext): ZergContext | undefined {
