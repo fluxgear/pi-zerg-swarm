@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-05-03
+
+### Fixed
+
+- Fixed read-only `/zerg mode status` handling so status is available without writable-state permission.
+- Fixed `/zerg mode revert` to clear `contextId` when reverting to the prior mode snapshot.
+- Added regression coverage for invalid mode actions and invalid mode reasons (control-only and overlong), asserting rejection without state mutation.
+
 ## [0.7.0] - 2026-05-03
 
 ### Added

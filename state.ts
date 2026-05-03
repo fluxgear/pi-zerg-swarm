@@ -142,12 +142,15 @@ export function applyModeTransition(
   return updateZergState(state, (base) => {
     const revision = base.revision + 1;
     const previousMode = clonePermissionModeSnapshot(base.mode);
+    const contextId = Object.hasOwn(transition, 'contextId')
+      ? transition.contextId
+      : base.mode.contextId;
     const mode: PermissionModeState = {
       ...base.mode,
       automation: transition.automation,
       controller: transition.controller,
       interventionEnabled: transition.interventionEnabled,
-      contextId: transition.contextId ?? base.mode.contextId,
+      contextId,
       previousMode,
       activeIntervention: transition.clearActiveIntervention === false ? base.mode.activeIntervention : undefined,
     };

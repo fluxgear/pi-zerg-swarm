@@ -719,6 +719,36 @@ test('applyModeTransition records audit snapshots and active intervention cleari
     { now: () => new Date(transitionAt) },
   );
   assert.deepEqual(retained.mode.activeIntervention, activeIntervention);
+
+  const revertInput = createZergState({
+    mode: {
+      automation: 'assisted',
+      interventionEnabled: true,
+      controller: 'operator',
+      contextId: 'ctx-revert-source',
+      previousMode: {
+        automation: 'automatic',
+        interventionEnabled: true,
+        controller: 'automation',
+      },
+    },
+  });
+
+  const clearedContext = applyModeTransition(
+    revertInput,
+    {
+      automation: 'automatic',
+      controller: 'automation',
+      interventionEnabled: true,
+      contextId: revertInput.mode.previousMode?.contextId,
+      reason: 'revert without context',
+      clearActiveIntervention: true,
+    },
+    { now: () => new Date(transitionAt) },
+  );
+
+  assert.equal(clearedContext.mode.contextId, undefined);
+  assert.equal(clearedContext.events[0]?.mode?.contextId, undefined);
 });
 
 test('applyInterventionRecord sanitizes messages and forces operator intervention state with audit payload', () => {
@@ -766,6 +796,18 @@ test('applyInterventionRecord sanitizes messages and forces operator interventio
 });
 
 test('createZergCommandHandler applies v0.7 mode status transitions and revert', () => {
+  const readOnlyHandler = createZergCommandHandler(createZergState());
+
+  const readOnlyStatus = readOnlyHandler('/zerg mode status');
+  assert.equal(readOnlyStatus.ok, true);
+  assert.ok(readOnlyStatus.output.includes('zerg v0.7.0 command surface'));
+  assert.ok(readOnlyStatus.output.includes('control operator'));
+  assert.ok(readOnlyStatus.output.includes('mode manual'));
+  assert.ok(readOnlyStatus.output.includes('no active intervention'));
+
+  assert.equal(readOnlyHandler('/zerg mode manual').ok, false);
+  assert.equal(readOnlyHandler('/zerg mode manual').output, 'Runtime lifecycle commands require writable zerg state.');
+
   const container = createZergStateContainer();
   const timestamps = createNowSequence(
     '2026-05-03T01:00:00.000Z',
@@ -780,6 +822,25 @@ test('createZergCommandHandler applies v0.7 mode status transitions and revert',
   assert.ok(status.output.includes('control operator'));
   assert.ok(status.output.includes('mode manual'));
   assert.ok(status.output.includes('no active intervention'));
+
+  const beforeInvalidMode = container.snapshot();
+  const invalidMode = handler('/zerg mode wat');
+  assert.equal(invalidMode.ok, false);
+  assert.equal(invalidMode.output, 'Unknown mode action: wat');
+  assert.deepEqual(container.snapshot(), beforeInvalidMode);
+
+  const beforeControlOnlyReason = container.snapshot();
+  const controlOnlyReasonText = String.fromCharCode(0);
+  const controlOnlyReason = handler(`/zerg mode automatic "${controlOnlyReasonText}"`);
+  assert.equal(controlOnlyReason.ok, false);
+  assert.equal(controlOnlyReason.output, 'mode reason exceeds 140 characters or contains only control characters.');
+  assert.deepEqual(container.snapshot(), beforeControlOnlyReason);
+
+  const beforeLongReason = container.snapshot();
+  const longReason = handler('/zerg mode automatic ' + 'x'.repeat(141));
+  assert.equal(longReason.ok, false);
+  assert.equal(longReason.output, 'mode reason exceeds 140 characters or contains only control characters.');
+  assert.deepEqual(container.snapshot(), beforeLongReason);
 
   const rejectedRevert = handler('/zerg mode revert');
   assert.equal(rejectedRevert.ok, false);
@@ -814,6 +875,29 @@ test('createZergCommandHandler applies v0.7 mode status transitions and revert',
   assert.equal(container.snapshot().mode.controller, 'automation');
   assert.deepEqual(container.snapshot().events.map((event) => event.type), ['mode', 'mode', 'mode', 'mode']);
   assert.equal(container.snapshot().events.at(-1)?.message, 'mode transition assisted/operator -> automatic/automation: rollback');
+});
+
+test('createZergCommandHandler mode revert clears contextId when previous snapshot has no context', () => {
+  const container = createZergStateContainer(createZergState({
+    mode: {
+      automation: 'assisted',
+      interventionEnabled: true,
+      controller: 'operator',
+      contextId: 'ctx-current',
+      previousMode: {
+        automation: 'automatic',
+        interventionEnabled: true,
+        controller: 'automation',
+      },
+    },
+  }));
+  const handler = createZergCommandHandler(container, { now: () => new Date('2026-05-03T01:10:00.000Z') });
+
+  const reverted = handler('/zerg mode revert rollback');
+  assert.equal(reverted.ok, true);
+  assert.equal(container.snapshot().mode.automation, 'automatic');
+  assert.equal(container.snapshot().mode.contextId, undefined);
+  assert.equal(container.snapshot().events.at(-1)?.mode?.contextId, undefined);
 });
 
 test('createZergCommandHandler applies v0.7 intervention APIs and rejects invalid targets', () => {

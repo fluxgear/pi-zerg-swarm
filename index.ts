@@ -311,12 +311,6 @@ function dispatchModeCommand(
   payload: string,
   options: RuntimeCommandOptions,
 ): ZergCommandResult {
-  const container = getWritableStateContainer(stateOrReader);
-
-  if (!container) {
-    return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
-  }
-
   const parsed = parseModeCommand(payload);
 
   if (!parsed.ok) {
@@ -326,8 +320,14 @@ function dispatchModeCommand(
   if (parsed.action === 'status') {
     return {
       ok: true,
-      output: renderStatusLine(container.read(), { width: PI_COMMAND_OUTPUT_WIDTH }),
+      output: renderStatusLine(resolveZergStateSnapshot(stateOrReader), { width: PI_COMMAND_OUTPUT_WIDTH }),
     };
+  }
+
+  const container = getWritableStateContainer(stateOrReader);
+
+  if (!container) {
+    return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
   }
 
   if (parsed.action === 'revert') {
@@ -352,7 +352,6 @@ function dispatchModeCommand(
         now: options.now,
       },
     );
-
     const snapshot = container.replace(nextState);
     if (options.syncSharedState) {
       replaceSharedZergState(snapshot);
