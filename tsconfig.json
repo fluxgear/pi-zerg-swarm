@@ -21,5 +21,14 @@
     "state.ts",
     "types.ts",
     "test/**/*.ts"
+  ],
+  "exclude": [
+    "prompts",
+    "planning",
+    ".pi",
+    ".claude",
+    ".codex",
+    ".agents",
+    "node_modules"
   ]
 }

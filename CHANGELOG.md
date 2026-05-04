@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-03
+
+### Added
+
+- Added package-readiness/config-hardening release checks (`check:package`, `check:version`) and private-path build/package guards for `prompts`, `planning`, `.pi`, `.claude`, `.codex`, and `.agents` to prevent release/compile leakage.
+- Added package metadata validation for MIT license consistency and package-lock sync checks, with repository metadata warning until canonical URL is configured.
+
+### Changed
+
+- Bumped package/package-lock top-level versions to `0.8.0` and aligned command/status/render/help surfaces and tests to the same release surface.
+- Updated README roadmap, development script guidance, and changelog scope statements for v0.8.0 package/readiness hardening.
+
+### Known Limitations
+
+- Canonical repository URL is still unavailable in this environment; `check:package` warns about missing repository metadata until configured.
+
 ## [0.7.1] - 2026-05-03
 
 ### Fixed
