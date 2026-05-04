@@ -120,8 +120,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v0.8.0 internal patch path active'
-        : 'pi-zerg-swarm v0.8.0 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v0.8.1 internal patch path active'
+        : 'pi-zerg-swarm v0.8.1 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {

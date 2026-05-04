@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-05-04
+
+### Fixed
+
+- Split the v0.8.0 audit follow-ups into an audit bugfix patch release.
+- Added direct `renderHelp` header regression coverage and renamed stale v0.7-labeled intervention/render test titles to version-neutral wording.
+
+### Changed
+
+- Bumped package/package-lock top-level versions to `0.8.1`.
+- Updated README and changelog release references plus command/status/help/runtime version strings and matching tests to v0.8.1 while preserving v0.8.0 as the completed package-readiness/config-hardening implementation milestone.
+
 ## [0.8.0] - 2026-05-03
 
 ### Added

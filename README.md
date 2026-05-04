@@ -2,7 +2,7 @@
 
 `pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
 
-> v0.8.0 status: package-readiness and config-hardening scope adds private-path package/build guards, repository/version metadata checks, and release scripts while preserving v0.7.1 command-host lifecycle+mode/intervention controls. Runtime and parser feature scope remains aligned. MIT licensing is unchanged; live TUI overlays, chat, and external transport validation remain planned and unvalidated.
+> v0.8.1 status: audit bugfix patch splits v0.8.0 follow-up release hygiene into its own cut while preserving v0.8.0 as the completed package-readiness/config-hardening implementation milestone. Runtime and parser feature scope remains aligned. MIT licensing is unchanged; live TUI overlays, chat, and external transport validation remain planned and unvalidated.
 
 ## Commands
 
@@ -10,7 +10,7 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v0.8.0 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, and agent/team lifecycle monitoring through snapshot-safe shared-state-backed Pi command handlers. Command-host control grammar is available via `/zerg mode status|manual|assisted|automatic|revert [reason]` and `/zerg intervene agent|subagent|leader ...`; live overlay chat/process-transport wiring is still out of scope.
+At v0.8.1 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, and agent/team lifecycle monitoring through snapshot-safe shared-state-backed Pi command handlers. The v0.8.0 package-readiness/config-hardening implementation milestone remains completed and unchanged. Command-host control grammar is available via `/zerg mode status|manual|assisted|automatic|revert [reason]` and `/zerg intervene agent|subagent|leader ...`; live overlay chat/process-transport wiring is still out of scope.
 
 ## Architecture
 
@@ -67,9 +67,9 @@ npm run check:package
 npm run check:version
 ```
 
-`npm run build` performs strict TypeScript no-emit checking. `npm test` runs parser plus command-surface coverage, v0.2.0 state/container behavior, registration snapshot semantics, v0.3.0 thinking-step parser coverage, internal-patch event-bus wrapping/duplicate/rollback/dispose paths, v0.4.1 release-hygiene assertions, v0.5.1 render regressions, v0.6.1 lifecycle/monitoring/shared-state coverage, v0.7.1 mode/intervention coverage, and v0.8.0 package-readiness surface consistency checks with fake-Pi shared-state parity checks using Node's built-in test runner and `tsx`.
+`npm run build` performs strict TypeScript no-emit checking. `npm test` runs parser plus command-surface coverage, v0.2.0 state/container behavior, registration snapshot semantics, v0.3.0 thinking-step parser coverage, internal-patch event-bus wrapping/duplicate/rollback/dispose paths, v0.4.1 release-hygiene assertions, v0.5.1 render regressions, v0.6.1 lifecycle/monitoring/shared-state coverage, v0.7.1 mode/intervention coverage, and v0.8.1 audit bugfix patch regression checks with fake-Pi shared-state parity checks using Node's built-in test runner and `tsx`.
 `npm run check:package` validates MIT/license metadata, package/build private-path guards, and package-lock to package version sync for release readiness, while warning if repository metadata is not yet configured.
-`npm run check:version` requires a `v0.8.0` tag at `HEAD`; until v0.8.0 is tagged this check fails by design. Canonical repository URL is not yet configured, so `check:package` currently warns until that metadata is added.
+`npm run check:version` requires a `v0.8.1` tag at `HEAD`; until v0.8.1 is tagged this check fails by design. Canonical repository URL is not yet configured, so `check:package` currently warns until that metadata is added.
 
 ## Roadmap
 
@@ -83,9 +83,9 @@ npm run check:version
 - v0.6.1: subagent runtime lifecycle and monitoring/status/tree command surfaces (completed)
 - v0.7.0: command-host mode/intervention controls with audited global state transitions and bounded intervention records (completed)
 - v0.7.1: audit bugfix patch for read-only `/zerg mode status`, mode-revert `contextId` clearing, and invalid/control-only/overlong mode reason regression coverage (completed)
-- v0.8.0: package readiness and config hardening (current release)
-- v0.8.1+: live TUI overlays and chat/external transport validation
-- v1.0.0-rc.1+: package and runtime release hardening
+- v0.8.0: package readiness and config hardening (completed implementation milestone)
+- v0.8.1: audit bugfix patch for release-surface/version-alignment follow-ups (current release)
+- v0.8.2+: live TUI overlays and chat/external transport validation
 
 ## License
 
