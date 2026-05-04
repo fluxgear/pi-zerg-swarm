@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-04
+
+### Added
+
+- Added v0.9.0 release-prep documentation polish for README hierarchy, Mermaid visuals, and truthful current-release status.
+- Added release/package-readiness context for package-check behavior and post-tag `check:version` expectations.
+
+### Changed
+
+- Updated release messaging in public docs and version references from v0.8.1 to v0.9.0 while preserving completed milestone history.
+- Bumped package metadata versions from `0.8.1` to `0.9.0` in package manifest files.
+- Reserved the follow-up audit backlog (`prompts/audit/themed-cleanup_v2-0-0.md` and `prompts/audit/generalized-deep-audit_v2-0-0.md`) for v0.9.1.
+
+### Known Limitations
+
+- Canonical repository URL is still unavailable in this environment; `check:package` warns about missing repository metadata until configured.
+- `npm run check:version` is a post-tag gate and is expected to fail until `v0.9.0` is explicitly tagged.
+- Live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
+
 ## [0.8.1] - 2026-05-04
 
 ### Fixed
@@ -65,6 +84,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed v0.6.1 audit regressions in runtime monitoring: same-timestamp lifecycle activity ordering, explicit-tree runtime hints, sanitized runtime activity output, and fallback to the newest displayable activity.
+
 ## [0.6.0] - 2026-05-02
 
 ### Added
