@@ -7,6 +7,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-05-05
+
+### Added
+
+- Added canonical repository metadata for the public GitHub repository in `package.json` so npm/`pi` consumers can discover and verify project origin: `git+https://github.com/fluxgear/pi-zerg-swarm.git`.
+- Documented publication/readiness status updates for README/CHANGELOG and check:version guidance in public docs.
+
+### Changed
+
+- Bumped package manifest versions from `0.9.0` to `0.9.1` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated current-release wording from v0.9.0 to v0.9.1 in public release notes.
+
+### Fixed
+
+- Polished README and changelog `check:version` guidance to reflect state-aware, post-tag behavior.
+- Removed stale statements claiming canonical repository metadata was still unavailable.
+- Updated publication-readiness wording so repository metadata and release checks are documented as resolved for v0.9.1.
+
+### Known Limitations
+
+- Live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
+
 ## [0.9.0] - 2026-05-04
 
 ### Added
@@ -22,8 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Known Limitations
 
-- Canonical repository URL is still unavailable in this environment; `check:package` warns about missing repository metadata until configured.
-- `npm run check:version` is a post-tag check; pre-tag release-prep failures were expected while `v0.9.0` was not yet tagged, and this section now reflects tagged-state status.
+- `npm run check:version` is a post-tag check; pre-tag release-prep failures were expected while `v0.9.0` was not yet tagged.
 - Live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
 
 ## [0.8.1] - 2026-05-04

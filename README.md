@@ -2,16 +2,17 @@
 
 `pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
 
-> **v0.9.0 release-prep status**
-> Documentation hierarchy, Mermaid diagrams, package metadata, and package-readiness notes are aligned for the release-prep gate.
+
+> **v0.9.1 release status**
+> Repository metadata is now configured, package-readiness notes are aligned, and release-doc wording reflects post-tag `check:version` expectations.
 > Runtime capability is unchanged: live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
 
 ## Release status
 
-- Current release: **v0.9.0** (release preparation and documentation polish on `develop`).
+- Current release: **v0.9.1** (publication readiness and README/changelog polish on `develop`).
 - Historical milestones preserved for audit traceability: v0.8.0 implementation milestone and v0.8.1 audit follow-up patch.
 - Follow-up audit prompts reserved for v0.9.1: `prompts/audit/themed-cleanup_v2-0-0.md` and `prompts/audit/generalized-deep-audit_v2-0-0.md`.
-- Canonical repository metadata is not configured yet; package checks warn rather than fabricating a URL.
+- Canonical repository metadata is configured for the public repo: https://github.com/fluxgear/pi-zerg-swarm.
 
 ## Commands
 
@@ -19,7 +20,7 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v0.9.0 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, and agent/team lifecycle monitoring through snapshot-safe shared-state-backed Pi command handlers.
+At v0.9.1 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, and agent/team lifecycle monitoring through snapshot-safe shared-state-backed Pi command handlers.
 Command-host control grammar is available via `/zerg mode status|manual|assisted|automatic|revert [reason]` and `/zerg intervene agent|subagent|leader ...`; live overlay chat/process-transport wiring is still out of scope.
 
 ## Architecture
@@ -89,10 +90,9 @@ npm test
 npm run check:package
 npm run check:version
 ```
-
 `npm run build` performs strict TypeScript no-emit checking. `npm test` runs parser plus command-surface coverage, v0.2.0 state/container behavior, registration snapshot semantics, v0.3.0 thinking-step parser coverage, internal-patch event-bus wrapping/duplicate/rollback/dispose paths, v0.4.1 release-hygiene assertions, v0.5.1 render regressions, v0.6.1 lifecycle/monitoring/shared-state coverage, v0.7.1 mode/intervention coverage, and audit-bugfix/publish-readiness regressions with fake-Pi shared-state parity checks using Node's built-in test runner and `tsx`.
-`npm run check:package` validates MIT/license metadata, package/build private-path guards, and package-lock↔package version sync for release readiness, while warning if repository metadata is not yet configured.
-`npm run check:version` confirms that the package release tag `v0.9.0` is at `HEAD` in post-tag state. In explicit pre-tag release-prep, skip this check only while the `v0.9.0` tag does not yet exist.
+`npm run check:package` validates MIT/license metadata, package/build private-path guards, package-lock↔package version sync, and repository metadata fields for release discoverability and consistency.
+`npm run check:version` confirms that the package release tag `v0.9.1` is at `HEAD` in post-tag state. During explicit pre-tag release-prep, skip this check only while the `v0.9.1` tag is not yet created.
 
 ## Roadmap
 
@@ -108,8 +108,8 @@ npm run check:version
 - v0.7.1: audit bugfix patch for read-only `/zerg mode status`, mode-revert `contextId` clearing, and invalid/control-only/overlong mode reason regression coverage (completed)
 - v0.8.0: package readiness and config hardening (completed implementation milestone)
 - v0.8.1: audit bugfix patch for release-surface/version-alignment follow-ups (completed milestone)
-- v0.9.0: release-prep/doc and package-readiness polish (current release)
-- v0.9.1: planned themed-cleanup / generalized-deep-audit follow-up fixes
+- v0.9.0: release-prep/doc and package-readiness polish (completed)
+- v0.9.1: publication/public repository readiness and check:version doc polish (current release)
 - v0.9.2+: live TUI overlays, chat, and external transport validation
 
 ## License

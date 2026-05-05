@@ -1,9 +1,13 @@
 {
   "name": "pi-zerg-swarm",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Bootstrap scaffold for a Pi coding-agent extension that will coordinate high-capacity agentic teams.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fluxgear/pi-zerg-swarm.git"
+  },
   "main": "./index.ts",
   "exports": {
     ".": "./index.ts"
