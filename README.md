@@ -92,7 +92,7 @@ npm run check:version
 
 `npm run build` performs strict TypeScript no-emit checking. `npm test` runs parser plus command-surface coverage, v0.2.0 state/container behavior, registration snapshot semantics, v0.3.0 thinking-step parser coverage, internal-patch event-bus wrapping/duplicate/rollback/dispose paths, v0.4.1 release-hygiene assertions, v0.5.1 render regressions, v0.6.1 lifecycle/monitoring/shared-state coverage, v0.7.1 mode/intervention coverage, and audit-bugfix/publish-readiness regressions with fake-Pi shared-state parity checks using Node's built-in test runner and `tsx`.
 `npm run check:package` validates MIT/license metadata, package/build private-path guards, and package-lock↔package version sync for release readiness, while warning if repository metadata is not yet configured.
-`npm run check:version` confirms that the package release tag `v0.9.0` is at `HEAD`. It is a post-tag gate by design; skip it during pre-tag release prep because it is expected to fail before the v0.9.0 tag exists.
+`npm run check:version` confirms that the package release tag `v0.9.0` is at `HEAD` in post-tag state. In explicit pre-tag release-prep, skip this check only while the `v0.9.0` tag does not yet exist.
 
 ## Roadmap
 

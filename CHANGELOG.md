@@ -23,7 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Known Limitations
 
 - Canonical repository URL is still unavailable in this environment; `check:package` warns about missing repository metadata until configured.
-- `npm run check:version` is a post-tag gate and is expected to fail until `v0.9.0` is explicitly tagged.
+- `npm run check:version` is a post-tag check; pre-tag release-prep failures were expected while `v0.9.0` was not yet tagged, and this section now reflects tagged-state status.
 - Live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
 
 ## [0.8.1] - 2026-05-04
