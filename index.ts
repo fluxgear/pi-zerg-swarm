@@ -120,8 +120,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v0.8.1 internal patch path active'
-        : 'pi-zerg-swarm v0.8.1 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.1 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.1 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -349,7 +349,7 @@ function dispatchModeCommand(
         clearActiveIntervention: true,
       },
       {
-        now: options.now,
+        now: options.now ?? (() => new Date()),
       },
     );
     const snapshot = container.replace(nextState);
@@ -368,7 +368,7 @@ function dispatchModeCommand(
     clearActiveIntervention: true,
   };
   const nextState = applyModeTransition(container.read(), transition, {
-    now: options.now,
+    now: options.now ?? (() => new Date()),
   });
   const snapshot = container.replace(nextState);
 
@@ -407,7 +407,7 @@ function dispatchInterventionCommand(
       message: parsed.message,
     },
     {
-      now: options.now,
+      now: options.now ?? (() => new Date()),
     },
   );
 
