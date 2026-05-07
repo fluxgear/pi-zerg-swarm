@@ -1,11 +1,12 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
-import { renderAgentTree, renderHelp, renderMonitor, renderStatusLine } from './render.js';
-import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, readSharedZergState, replaceSharedZergState, snapshotZergState } from './state.js';
-import { ZERG_COMMANDS, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type ZergCommandName, type ZergCommandResult, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer } from './types.js';
+import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderStatusLine } from './render.js';
+import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, getAgentDefinition, getAgentDefinitions, readSharedZergState, replaceSharedZergState, seedBuiltinAgentDefinitions, snapshotZergState } from './state.js';
+import { ZERG_COMMANDS, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchRequest } from './types.js';
 
 export interface ZergCommandHandlerOptions {
   now?: () => Date;
+  subagentAdapter?: ZergSubagentControlAdapter;
 }
 
 type RuntimeCommandOptions = ZergCommandHandlerOptions & { syncSharedState?: boolean };
@@ -24,7 +25,7 @@ export interface ZergExtensionRegistration {
   dispose(): void;
 }
 
-type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene' | 'monitor';
+type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene' | 'monitor' | 'control' | 'config' | 'run' | 'interrupt' | 'agents';
 type ZergCommandDispatcher = (payload: string) => ZergCommandResult;
 type RuntimeParseResult = { ok: false; output: string } | { ok: true; transition: ZergRuntimeTransition };
 
@@ -49,6 +50,13 @@ type ZergStateSource = ZergState | (() => ZergState) | ZergStateContainer;
 const RUNTIME_WRITABLE_STATE_ERROR = 'Runtime lifecycle commands require writable zerg state.';
 const MAX_INTERVENTION_MESSAGE_LENGTH = 240;
 const MAX_INTERVENTION_MESSAGE_LENGTH_FOR_REASONS = 140;
+const ZERG_CONTROL_EXTENSION_KEY = 'zergControl';
+const CONFIG_OVERLAY_TABS: ZergConfigOverlayTab[] = ['monitor', 'control', 'targets', 'config'];
+const SLASH_SUBAGENT_REQUEST_EVENT = 'subagent:slash:request';
+const SLASH_SUBAGENT_STARTED_EVENT = 'subagent:slash:started';
+const SLASH_SUBAGENT_RESPONSE_EVENT = 'subagent:slash:response';
+const SLASH_SUBAGENT_UPDATE_EVENT = 'subagent:slash:update';
+const SLASH_SUBAGENT_CANCEL_EVENT = 'subagent:slash:cancel';
 
 
 interface NormalizedZergCommandInput {
@@ -77,7 +85,12 @@ export function registerZergSwarmExtension(
   context: StructuralPiExtensionContext = {},
   options: ZergCommandHandlerOptions = {},
 ): ZergExtensionRegistration {
-  const stateContainer = createZergStateContainer(readSharedZergState());
+  const sharedSeedSource = readSharedZergState();
+  const sharedSeed = seedBuiltinAgentDefinitions(sharedSeedSource);
+  const stateContainer = createZergStateContainer(sharedSeed);
+  if (sharedSeed !== sharedSeedSource) {
+    replaceSharedZergState(sharedSeed);
+  }
   let patch: ZergInternalPatchController | undefined;
   const commandDisposers: RegisteredCommandDisposer[] = [];
 
@@ -98,12 +111,14 @@ export function registerZergSwarmExtension(
       syncSharedStateFromContainer();
       return snapshot;
     },
+    subscribe: (listener) => stateContainer.subscribe?.(listener) ?? (() => undefined),
   };
+  const subagentAdapter = options.subagentAdapter ?? createPiSlashBridgeAdapter(context, syncedStateContainer, { ...options, syncSharedState: true } as RuntimeCommandOptions);
 
   try {
     const installedPatch = installInternalPatch(context, syncedStateContainer);
     patch = installedPatch;
-    const handler = createPiZergCommandHandler(syncedStateContainer, { ...options, syncSharedState: true } as RuntimeCommandOptions);
+    const handler = createPiZergCommandHandler(syncedStateContainer, { ...options, subagentAdapter, syncSharedState: true } as RuntimeCommandOptions);
 
     for (const name of ZERG_COMMANDS) {
       const commandDisposer = registerCommand(context, {
@@ -120,8 +135,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.2 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.2 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.3 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.3 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -158,6 +173,12 @@ export function registerZergSwarmExtension(
 
       try {
         installedPatch.dispose();
+      } catch (error) {
+        firstError ??= error;
+      }
+
+      try {
+        subagentAdapter.dispose?.();
       } catch (error) {
         firstError ??= error;
       }
@@ -207,11 +228,16 @@ export function createZergCommandHandler(
         : 'No thinking steps detected.';
       return { ok: true, output };
     },
+    agents: (payload: string) => dispatchAgentDefinitionsCommand(stateOrReader, payload),
     agent: (payload: string) => dispatchRuntimeCommand(stateOrReader, 'agent', payload, options),
     team: (payload: string) => dispatchRuntimeCommand(stateOrReader, 'team', payload, options),
     mode: (payload: string) => dispatchModeCommand(stateOrReader, payload, options),
     intervene: (payload: string) => dispatchInterventionCommand(stateOrReader, payload, options),
     monitor: (payload: string) => dispatchMonitorCommand(stateOrReader, payload, options),
+    control: (payload: string) => dispatchControlCommand(stateOrReader, payload, options),
+    config: () => ({ ok: true, output: renderZergConfigOverlay(resolveZergStateSnapshot(stateOrReader), { width: PI_COMMAND_OUTPUT_WIDTH, activeTab: 'config', selectedIndex: 0 }) }),
+    run: (payload: string) => dispatchRunCommand(stateOrReader, payload, options),
+    interrupt: (payload: string) => dispatchInterruptCommand(payload, options),
   };
 
   return (input?: string): ZergCommandResult => {
@@ -270,7 +296,50 @@ function isZergInvocationToken(value: string): value is ZergCommandName {
 }
 
 function isZergCommandTopic(value: string): value is ZergCommandTopic {
-  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene' || value === 'monitor';
+  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agents' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene' || value === 'monitor' || value === 'control' || value === 'config' || value === 'run' || value === 'interrupt';
+}
+
+function dispatchAgentDefinitionsCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+): ZergCommandResult {
+  const snapshot = resolveZergStateSnapshot(stateOrReader);
+  const definitions = getAgentDefinitions(snapshot);
+  const tokens = tokenizeRuntimePayload(payload);
+  const action = tokens[0]?.toLowerCase();
+
+  if (!action || action === 'list' || action === 'ls') {
+    if (definitions.length === 0) {
+      return { ok: true, output: 'No agent definitions are currently registered.' };
+    }
+
+    return {
+      ok: true,
+      output: renderAgentDefinitionsList(definitions, { width: PI_COMMAND_OUTPUT_WIDTH }),
+    };
+  }
+
+  if (action === 'show') {
+    const id = tokens[1];
+    if (!id) {
+      return { ok: false, output: 'Usage: /zerg agents show <id>' };
+    }
+
+    const definition = getAgentDefinition(snapshot, id);
+    if (!definition) {
+      return { ok: false, output: `Unknown agent definition: ${id}` };
+    }
+
+    return {
+      ok: true,
+      output: renderAgentDefinitionSummary(definition, { width: PI_COMMAND_OUTPUT_WIDTH }),
+    };
+  }
+
+  return {
+    ok: false,
+    output: `Unknown agents action: ${action}. Available: /zerg agents list, /zerg agents show <id>`,
+  };
 }
 
 function dispatchRuntimeCommand(
@@ -443,61 +512,25 @@ function dispatchMonitorCommand(
     };
   }
 
-  if (normalizedTopic === 'readonly' || normalizedTopic === 'read-only' || normalizedTopic === 'ro') {
+  if (isReadOnlyTopic(normalizedTopic)) {
     const container = getWritableStateContainer(stateOrReader);
 
     if (!container) {
       return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
     }
 
-    const current = container.read();
-    const currentValue = Boolean(current.mode.readOnly);
-
     if (!argument || argument === 'status') {
+      const currentValue = Boolean(container.read().mode.readOnly);
       return {
         ok: true,
         output: `monitor read-only is currently ${currentValue ? 'enabled' : 'disabled'}`,
       };
     }
 
-    const targetValue = argument === 'on'
-      ? true
-      : argument === 'off'
-        ? false
-        : argument === 'enable'
-          ? true
-          : argument === 'disable'
-            ? false
-            : argument === 'true'
-              ? true
-              : argument === 'false'
-                ? false
-                : argument === 'toggle'
-                  ? !currentValue
-                  : undefined;
+    const snapshotWithReadOnly = setReadOnlyMode(container, argument, options, 'monitor');
 
-    if (targetValue === undefined) {
-      return { ok: false, output: `Unknown monitor readonly value: ${argument}` };
-    }
-
-    const nextState = applyModeTransition(
-      current,
-      {
-        automation: current.mode.automation,
-        controller: current.mode.controller,
-        interventionEnabled: current.mode.interventionEnabled,
-        readOnly: targetValue,
-        reason: `read-only ${targetValue ? 'enabled' : 'disabled'}`,
-        clearActiveIntervention: false,
-      },
-      {
-        now: options.now ?? (() => new Date()),
-      },
-    );
-
-    const snapshotWithReadOnly = container.replace(nextState);
-    if (options.syncSharedState) {
-      replaceSharedZergState(snapshotWithReadOnly);
+    if (typeof snapshotWithReadOnly === 'string') {
+      return { ok: false, output: snapshotWithReadOnly };
     }
 
     return {
@@ -509,6 +542,125 @@ function dispatchMonitorCommand(
   return { ok: false, output: `Unknown monitor action: ${normalizedPayload[0] ?? ''}` };
 }
 
+function dispatchRunCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
+  const current = resolveZergStateSnapshot(stateOrReader);
+  if (current.mode.readOnly) {
+    return { ok: false, output: 'zerg run is blocked while read-only is enabled. Use /zerg control readonly off to allow subagent control.' };
+  }
+
+  const adapter = options.subagentAdapter;
+  if (!adapter || adapter.kind === 'unavailable') {
+    return { ok: false, output: 'No Pi subagent adapter is available. Load pi-subagents or provide a ZergSubagentControlAdapter.' };
+  }
+
+  const parsed = parseRunCommand(payload);
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  const result = adapter.launch(parsed.request);
+  return { ok: result.ok, output: result.message };
+}
+
+function dispatchInterruptCommand(payload: string, options: RuntimeCommandOptions): ZergCommandResult {
+  const adapter = options.subagentAdapter;
+  if (!adapter || adapter.kind === 'unavailable' || typeof adapter.interrupt !== 'function') {
+    return { ok: false, output: 'No interrupt-capable Pi subagent adapter is available.' };
+  }
+
+  const [runId] = tokenizeRuntimePayload(payload);
+  const result = adapter.interrupt(runId);
+  return { ok: result.ok, output: result.message };
+}
+
+function dispatchControlCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
+  const tokens = tokenizeRuntimePayload(payload);
+  const topic = tokens[0]?.toLowerCase() ?? 'status';
+  const argument = tokens[1]?.toLowerCase();
+
+  if (topic === 'status') {
+    return { ok: true, output: renderZergControlStatus(resolveZergStateSnapshot(stateOrReader), PI_COMMAND_OUTPUT_WIDTH) };
+  }
+
+  const container = getWritableStateContainer(stateOrReader);
+
+  if (!container) {
+    return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
+  }
+
+  if (isReadOnlyTopic(topic)) {
+    if (!argument || argument === 'status') {
+      return { ok: true, output: `control read-only is currently ${container.read().mode.readOnly ? 'enabled' : 'disabled'}` };
+    }
+
+    const snapshot = setReadOnlyMode(container, argument, options, 'control');
+    if (typeof snapshot === 'string') {
+      return { ok: false, output: snapshot };
+    }
+    return { ok: true, output: renderZergControlStatus(snapshot, PI_COMMAND_OUTPUT_WIDTH) };
+  }
+
+  if (topic === 'controller') {
+    if (!argument || argument === 'status') {
+      return { ok: true, output: `zerg controller is ${getZergControlState(container.read()).controller}` };
+    }
+
+    if (!isZergControlController(argument)) {
+      return { ok: false, output: `Unknown control controller: ${argument}` };
+    }
+
+    const snapshot = updateZergControlState(container, { controller: argument }, `controller set to ${argument}`, options);
+    return { ok: true, output: renderZergControlStatus(snapshot, PI_COMMAND_OUTPUT_WIDTH) };
+  }
+
+  if (topic === 'mode') {
+    if (!argument || !isAutomationMode(argument)) {
+      return { ok: false, output: `Unknown control mode: ${argument ?? ''}` };
+    }
+
+    const snapshot = setAutomationMode(container, argument, options);
+    return { ok: true, output: renderZergControlStatus(snapshot, PI_COMMAND_OUTPUT_WIDTH) };
+  }
+
+  return { ok: false, output: `Unknown control action: ${tokens[0] ?? ''}` };
+}
+
+
+function parseRunCommand(payload: string): { ok: false; output: string } | { ok: true; request: ZergSubagentLaunchRequest } {
+  const tokens = tokenizeRuntimePayload(payload);
+  let background = false;
+  let fork = false;
+  const filtered: string[] = [];
+  for (const token of tokens) {
+    if (token === '--bg' || token === '--background') {
+      background = true;
+    } else if (token === '--fork') {
+      fork = true;
+    } else {
+      filtered.push(token);
+    }
+  }
+
+  const [agent, ...taskTokens] = filtered;
+  if (!agent) {
+    return { ok: false, output: 'Usage: /zerg run <agent> <task> [--bg] [--fork]' };
+  }
+
+  const task = taskTokens.join(' ').trim();
+  if (!task) {
+    return { ok: false, output: 'zerg run requires a non-empty task.' };
+  }
+
+  return { ok: true, request: { agent, task, background, fork } };
+}
 
 function parseModeCommand(payload: string): ModeParseResult {
   const [actionToken, ...rest] = tokenizeRuntimePayload(payload);
@@ -684,6 +836,325 @@ function isZergStateContainer(value: ZergStateSource): value is ZergStateContain
     && typeof (value as Partial<ZergStateContainer>).update === 'function';
 }
 
+function subscribeToZergState(stateOrReader: ZergStateSource, listener: () => void): () => void {
+  if (isZergStateContainer(stateOrReader) && typeof stateOrReader.subscribe === 'function') {
+    return stateOrReader.subscribe(listener);
+  }
+
+  return () => undefined;
+}
+
+function isReadOnlyTopic(value: string): boolean {
+  return value === 'readonly' || value === 'read-only' || value === 'ro';
+}
+
+function parseReadOnlyValue(value: string, currentValue: boolean): boolean | undefined {
+  return value === 'on'
+    ? true
+    : value === 'off'
+      ? false
+      : value === 'enable'
+        ? true
+        : value === 'disable'
+          ? false
+          : value === 'true'
+            ? true
+            : value === 'false'
+              ? false
+              : value === 'toggle'
+                ? !currentValue
+                : undefined;
+}
+
+function setReadOnlyMode(
+  container: ZergStateContainer,
+  value: string,
+  options: RuntimeCommandOptions,
+  source: string,
+): ZergState | string {
+  const current = container.read();
+  const targetValue = parseReadOnlyValue(value, Boolean(current.mode.readOnly));
+
+  if (targetValue === undefined) {
+    return `Unknown ${source} readonly value: ${value}`;
+  }
+
+  const nextState = applyModeTransition(
+    current,
+    {
+      automation: current.mode.automation,
+      controller: current.mode.controller,
+      interventionEnabled: current.mode.interventionEnabled,
+      readOnly: targetValue,
+      reason: `${source} read-only ${targetValue ? 'enabled' : 'disabled'}`,
+      clearActiveIntervention: false,
+    },
+    {
+      now: options.now ?? (() => new Date()),
+    },
+  );
+
+  const snapshot = container.replace(nextState);
+  if (options.syncSharedState) {
+    replaceSharedZergState(snapshot);
+  }
+  return snapshot;
+}
+
+function setAutomationMode(container: ZergStateContainer, automation: AutomationMode, options: RuntimeCommandOptions): ZergState {
+  const current = container.read();
+  const nextState = applyModeTransition(
+    current,
+    {
+      automation,
+      controller: automation === 'automatic' ? 'automation' : 'operator',
+      interventionEnabled: current.mode.interventionEnabled,
+      readOnly: current.mode.readOnly,
+      reason: `overlay mode set to ${automation}`,
+      clearActiveIntervention: false,
+    },
+    {
+      now: options.now ?? (() => new Date()),
+    },
+  );
+  const snapshot = container.replace(nextState);
+  if (options.syncSharedState) {
+    replaceSharedZergState(snapshot);
+  }
+  return snapshot;
+}
+
+function getZergControlState(state: ZergState): ZergControlState {
+  const candidate = state.extensions[ZERG_CONTROL_EXTENSION_KEY] as Partial<ZergControlState> | undefined;
+  const controller = isZergControlController(candidate?.controller) ? candidate.controller : 'operator';
+  return {
+    controller,
+    selectedTargetId: typeof candidate?.selectedTargetId === 'string' ? candidate.selectedTargetId : undefined,
+    activeRunId: typeof candidate?.activeRunId === 'string' ? candidate.activeRunId : undefined,
+    auditLog: Array.isArray(candidate?.auditLog) ? candidate.auditLog.slice(-20) : [],
+  };
+}
+
+function updateZergControlState(
+  container: ZergStateContainer,
+  patch: Partial<ZergControlState>,
+  message: string,
+  options: RuntimeCommandOptions,
+): ZergState {
+  const now = (options.now ?? (() => new Date()))().toISOString();
+  const current = container.read();
+  const control = getZergControlState(current);
+  const nextControl: ZergControlState = {
+    ...control,
+    ...patch,
+    auditLog: [
+      ...(control.auditLog ?? []),
+      { id: `control-${current.revision + 1}`, action: 'control', message, createdAt: now },
+    ].slice(-20),
+  };
+  const snapshot = container.update((state) => ({
+    extensions: {
+      ...state.extensions,
+      [ZERG_CONTROL_EXTENSION_KEY]: nextControl,
+    },
+  }), { updatedAt: now });
+  if (options.syncSharedState) {
+    replaceSharedZergState(snapshot);
+  }
+  return snapshot;
+}
+
+function isZergControlController(value: unknown): value is ZergControlController {
+  return value === 'operator' || value === 'pi' || value === 'zerg';
+}
+
+function isAutomationMode(value: string): value is AutomationMode {
+  return value === 'manual' || value === 'assisted' || value === 'automatic';
+}
+
+function getConfigTargets(state: ZergState): Array<{ id: string; label: string; kind: string; status: string }> {
+  return [
+    ...Object.values(state.agents).map((agent) => ({ id: agent.id, label: agent.label, kind: agent.kind, status: agent.status })),
+    ...Object.values(state.teams).map((team) => ({ id: team.id, label: team.label, kind: team.kind, status: team.status })),
+    ...Object.values(state.tasks).map((task) => ({ id: task.id, label: task.title, kind: 'task', status: task.status })),
+  ].sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
+}
+
+function renderZergControlStatus(state: ZergState, width: number): string {
+  const control = getZergControlState(state);
+  const readOnly = state.mode.readOnly ? 'enabled' : 'disabled';
+  const latestAudit = control.auditLog?.at(-1)?.message ?? 'none';
+  return [
+    'zerg control',
+    `controller: ${control.controller}`,
+    `mode: ${state.mode.automation}`,
+    `read-only: ${readOnly}`,
+    `selected target: ${control.selectedTargetId ?? 'none'}`,
+    `active run: ${control.activeRunId ?? 'none'}`,
+    `adapter: Pi slash bridge when available; commands /zerg run and /zerg interrupt`,
+    `latest audit: ${latestAudit}`,
+  ].map((line) => line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line).join('\n');
+}
+
+function createPiSlashBridgeAdapter(
+  context: StructuralPiExtensionContext,
+  container: ZergStateContainer,
+  options: RuntimeCommandOptions,
+): ZergSubagentControlAdapter {
+  const events = context.events;
+  if (!events || typeof events.emit !== 'function' || typeof events.on !== 'function') {
+    return {
+      kind: 'unavailable',
+      launch: () => ({ ok: false, message: 'Pi event bus is unavailable for subagent control.' }),
+    };
+  }
+
+  const pending = new Map<string, { started: boolean; completed: boolean; launched: boolean; agent: string; task: string }>();
+  const disposers = [
+    subscribePiEvent(events, SLASH_SUBAGENT_STARTED_EVENT, (data) => {
+      const requestId = getEventRequestId(data);
+      if (!requestId) return;
+      const run = pending.get(requestId);
+      if (run) run.started = true;
+      const snapshot = updateZergControlState(container, { activeRunId: requestId }, `subagent ${requestId} started`, options);
+      container.replace(applyRuntimeTransition(snapshot, { entity: 'agent', action: 'start', id: requestId, label: run?.agent ?? requestId, kind: 'subagent', activity: run?.task }, { now: options.now ?? (() => new Date()) }));
+    }),
+    subscribePiEvent(events, SLASH_SUBAGENT_UPDATE_EVENT, (data) => {
+      const requestId = getEventRequestId(data);
+      if (!requestId) return;
+      const currentTool = data && typeof data === 'object' && typeof (data as { currentTool?: unknown }).currentTool === 'string'
+        ? (data as { currentTool: string }).currentTool
+        : 'progress';
+      const snapshot = applyRuntimeTransition(container.read(), { entity: 'agent', action: 'progress', id: requestId, kind: 'subagent', activity: currentTool }, { now: options.now ?? (() => new Date()) });
+      container.replace(snapshot);
+    }),
+    subscribePiEvent(events, SLASH_SUBAGENT_RESPONSE_EVENT, (data) => {
+      const requestId = getEventRequestId(data);
+      if (!requestId) return;
+      const isError = data && typeof data === 'object' && (data as { isError?: unknown }).isError === true;
+      const run = pending.get(requestId);
+      if (run) {
+        run.completed = true;
+      }
+      const snapshot = applyRuntimeTransition(container.read(), { entity: 'agent', action: isError ? 'fail' : 'stop', id: requestId, label: run?.agent ?? requestId, kind: 'subagent', activity: isError ? 'subagent failed' : 'subagent complete' }, { now: options.now ?? (() => new Date()) });
+      container.replace(snapshot);
+      if (run?.launched) {
+        pending.delete(requestId);
+      }
+    }),
+  ];
+
+  return {
+    kind: 'pi-slash-bridge',
+    launch(request) {
+      const requestId = `zerg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      pending.set(requestId, { started: false, completed: false, launched: false, agent: request.agent, task: request.task });
+      const before = applyRuntimeTransition(container.read(), { entity: 'agent', action: 'create', id: requestId, label: request.agent, kind: 'subagent', activity: request.task }, { now: options.now ?? (() => new Date()) });
+      container.replace(before);
+      events.emit!(SLASH_SUBAGENT_REQUEST_EVENT, {
+        requestId,
+        params: {
+          agent: request.agent,
+          task: request.task,
+          clarify: false,
+          agentScope: 'both',
+          ...(request.background ? { async: true } : {}),
+          ...(request.fork ? { context: 'fork' as const } : {}),
+        },
+      });
+      const run = pending.get(requestId);
+      if (!run?.started) {
+        pending.delete(requestId);
+        const failed = applyRuntimeTransition(container.read(), { entity: 'agent', action: 'fail', id: requestId, label: request.agent, kind: 'subagent', activity: 'No pi-subagents slash bridge responded.' }, { now: options.now ?? (() => new Date()) });
+        container.replace(failed);
+        return { ok: false, runId: requestId, message: 'No pi-subagents slash bridge responded. Ensure pi-subagents is loaded.' };
+      }
+      run.launched = true;
+      updateZergControlState(container, { activeRunId: requestId }, `launched ${request.agent}`, options);
+      if (run.completed) {
+        pending.delete(requestId);
+      }
+      return { ok: true, runId: requestId, message: `zerg launched ${request.agent} as ${requestId}` };
+    },
+    interrupt(runId) {
+      const target = runId || getZergControlState(container.read()).activeRunId;
+      if (!target) {
+        return { ok: false, message: 'No active zerg subagent run to interrupt.' };
+      }
+      events.emit!(SLASH_SUBAGENT_CANCEL_EVENT, { requestId: target });
+      updateZergControlState(container, { activeRunId: target }, `interrupt requested for ${target}`, options);
+      return { ok: true, runId: target, message: `interrupt requested for ${target}` };
+    },
+    dispose() {
+      for (const dispose of disposers) dispose();
+      pending.clear();
+    },
+  };
+}
+
+function subscribePiEvent(
+  events: NonNullable<StructuralPiExtensionContext['events']>,
+  eventName: string,
+  handler: (data: unknown) => void,
+): () => void {
+  const registration = events.on?.(eventName, handler);
+  if (typeof registration === 'function') {
+    return () => { (registration as () => void)(); };
+  }
+  if (registration && typeof registration === 'object' && typeof (registration as { dispose?: unknown }).dispose === 'function') {
+    return () => (registration as { dispose(): void }).dispose();
+  }
+  return () => undefined;
+}
+
+function getEventRequestId(data: unknown): string | undefined {
+  return data && typeof data === 'object' && typeof (data as { requestId?: unknown }).requestId === 'string'
+    ? (data as { requestId: string }).requestId
+    : undefined;
+}
+
+function renderZergConfigOverlay(
+  state: ZergState,
+  options: { width: number; activeTab: ZergConfigOverlayTab; selectedIndex: number },
+): string {
+  const width = options.width;
+  const selectedTab = options.activeTab;
+  const tabLine = CONFIG_OVERLAY_TABS.map((tab) => tab === selectedTab ? `[${tab}]` : ` ${tab} `).join(' ');
+  const lines = [
+    'zerg config',
+    tabLine,
+    'keys: tab/shift-tab switch tabs | ↑/↓ select target | r read-only | m/a/u mode | q/esc close',
+    '',
+  ];
+
+  if (selectedTab === 'monitor') {
+    lines.push(...renderMonitor(state, { width }).split('\n'));
+  } else if (selectedTab === 'control') {
+    lines.push(...renderZergControlStatus(state, width).split('\n'));
+  } else if (selectedTab === 'targets') {
+    const targets = getConfigTargets(state);
+    lines.push('targets:');
+    if (targets.length === 0) {
+      lines.push('  none');
+    } else {
+      targets.slice(0, 20).forEach((target, index) => {
+        const marker = index === options.selectedIndex ? '>' : ' ';
+        lines.push(`${marker} ${target.kind} ${target.id} ${target.label} [${target.status}]`);
+      });
+    }
+  } else {
+    const control = getZergControlState(state);
+    lines.push('configuration:');
+    lines.push(`  controller: ${control.controller} (command: /zerg control controller pi|zerg|operator)`);
+    lines.push(`  automation: ${state.mode.automation} (keys: m manual, a assisted, u automatic)`);
+    lines.push(`  read-only: ${state.mode.readOnly ? 'enabled' : 'disabled'} (key: r)`);
+    lines.push('  Pi adapter: /zerg run emits pi-subagents slash bridge events when available');
+    lines.push('  zerg adapter: command and overlay controls share the same adapter boundary');
+  }
+
+  return lines.map((line) => line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line).join('\n');
+}
+
 export function createPiZergCommandHandler(
   stateOrReader: ZergStateSource,
   options: ZergCommandHandlerOptions = {},
@@ -695,41 +1166,117 @@ export function createPiZergCommandHandler(
     const result = await scaffoldHandler(input);
     const output = typeof result === 'string' ? result : result.output;
 
-    if (normalized.topic === 'monitor' && context.ui?.custom) {
-      const renderMonitorOutput = (width?: number) => {
+    if ((normalized.topic === 'monitor' || normalized.topic === 'config') && context.ui?.custom) {
+      const overlayTopic = normalized.topic as 'monitor' | 'config';
+      let activeTab: ZergConfigOverlayTab = overlayTopic === 'monitor' ? 'monitor' : 'config';
+      let selectedIndex = 0;
+      const renderOverlayOutput = (width?: number) => {
+        const outputWidth = typeof width === 'number' ? width : PI_COMMAND_OUTPUT_WIDTH;
         if (!result.ok) {
           return output;
         }
 
-        return renderMonitor(resolveZergStateSnapshot(stateOrReader), {
-          width: typeof width === 'number' ? width : PI_COMMAND_OUTPUT_WIDTH,
-        });
+        const snapshot = resolveZergStateSnapshot(stateOrReader);
+        return overlayTopic === 'monitor'
+          ? renderMonitor(snapshot, { width: outputWidth })
+          : renderZergConfigOverlay(snapshot, { width: outputWidth, activeTab, selectedIndex });
       };
 
       try {
         context.ui.custom(
-          (done?: () => void) => ({
-            render: (width?: number, _height?: number) => renderMonitorOutput(width).split('\n'),
-            invalidate: () => undefined,
-            handleInput: (data: string) => {
-              if (data === 'q' || data === 'Q' || data === '\u001b') {
-                done?.();
+          (tui?: StructuralPiTuiHandle, _theme?: unknown, _keybindings?: unknown, done?: () => void) => {
+            let closed = false;
+            let invalidated = false;
+            const requestRender = () => {
+              invalidated = true;
+              tui?.requestRender?.();
+            };
+            const unsubscribe = subscribeToZergState(stateOrReader, requestRender);
+            const close = () => {
+              if (closed) {
+                return;
               }
-            },
-          }),
+
+              closed = true;
+              unsubscribe();
+              done?.();
+            };
+            const switchTab = (direction: 1 | -1) => {
+              const currentIndex = CONFIG_OVERLAY_TABS.indexOf(activeTab);
+              activeTab = CONFIG_OVERLAY_TABS[(currentIndex + direction + CONFIG_OVERLAY_TABS.length) % CONFIG_OVERLAY_TABS.length]!;
+              requestRender();
+            };
+            const updateSelectedTarget = (direction: 1 | -1) => {
+              const targets = getConfigTargets(resolveZergStateSnapshot(stateOrReader));
+              if (targets.length === 0) {
+                selectedIndex = 0;
+                return;
+              }
+              selectedIndex = (selectedIndex + direction + targets.length) % targets.length;
+              const container = getWritableStateContainer(stateOrReader);
+              if (container) {
+                updateZergControlState(container, { selectedTargetId: targets[selectedIndex]?.id }, `selected target ${targets[selectedIndex]?.id}`, { ...options, syncSharedState: (options as RuntimeCommandOptions).syncSharedState });
+              }
+              requestRender();
+            };
+            const applyOverlayMutation = (mutate: () => void) => {
+              mutate();
+              requestRender();
+            };
+
+            return {
+              render: (width?: number, _height?: number) => {
+                invalidated = false;
+                return renderOverlayOutput(width).split('\n');
+              },
+              invalidate: () => {
+                invalidated = true;
+              },
+              handleInput: (data: string) => {
+                if (data === 'q' || data === 'Q' || data === '\u001b') {
+                  close();
+                } else if (overlayTopic === 'config' && (data === '\t' || data === 'tab')) {
+                  switchTab(1);
+                } else if (overlayTopic === 'config' && (data === '\u001b[Z' || data === 'shift-tab')) {
+                  switchTab(-1);
+                } else if (overlayTopic === 'config' && (data === '\u001b[A' || data === 'up')) {
+                  updateSelectedTarget(-1);
+                } else if (overlayTopic === 'config' && (data === '\u001b[B' || data === 'down')) {
+                  updateSelectedTarget(1);
+                } else if (overlayTopic === 'config' && (data === 'r' || data === 'R')) {
+                  applyOverlayMutation(() => {
+                    const container = getWritableStateContainer(stateOrReader);
+                    if (container) {
+                      setReadOnlyMode(container, 'toggle', { ...options, syncSharedState: (options as RuntimeCommandOptions).syncSharedState }, 'overlay');
+                    }
+                  });
+                } else if (overlayTopic === 'config' && (data === 'm' || data === 'M' || data === 'a' || data === 'A' || data === 'u' || data === 'U')) {
+                  applyOverlayMutation(() => {
+                    const container = getWritableStateContainer(stateOrReader);
+                    if (container) {
+                      const mode = data.toLowerCase() === 'm' ? 'manual' : data.toLowerCase() === 'a' ? 'assisted' : 'automatic';
+                      setAutomationMode(container, mode, { ...options, syncSharedState: (options as RuntimeCommandOptions).syncSharedState });
+                    }
+                  });
+                } else if (invalidated) {
+                  tui?.requestRender?.();
+                }
+              },
+            };
+          },
           {
             overlay: true,
             overlayOptions: {
-              title: 'zerg monitor',
+              title: overlayTopic === 'monitor' ? 'zerg monitor' : 'zerg config',
             },
           },
         );
         return;
       } catch {
         try {
-          context.ui.custom((width: number) => renderMonitorOutput(width), {
+          context.ui.custom((width: number) => renderOverlayOutput(width), {
             mode: 'overlay',
-            title: 'zerg monitor',
+            title: overlayTopic === 'monitor' ? 'zerg monitor' : 'zerg config',
           });
           return;
         } catch {

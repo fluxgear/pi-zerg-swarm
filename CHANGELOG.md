@@ -7,6 +7,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-rc.3] - 2026-05-06
+
+### Added
+
+- Added a typed in-memory agent-definition registry with deterministic builtin `generalist`, `planner`, and `reviewer` definitions.
+- Added read-only `/zerg agents list` and `/zerg agents show <id>` command support for inspecting registered agent policies.
+- Added registry helper APIs, clone-safe state storage, rendering support, and regression coverage for definition normalization, cloning, sorting, and command output.
+
+### Changed
+
+- Bumped package manifest versions from `1.0.0-rc.2` to `1.0.0-rc.3` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, and matching tests from `v1.0.0-rc.2` to `v1.0.0-rc.3`.
+
+### Known Limitations
+
+- Filesystem-backed agent loading, markdown frontmatter parsing, and hard `/zerg run` definition enforcement remain future milestones.
+- Live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
+
 ## [1.0.0-rc.2] - 2026-05-05
 
 ### Added

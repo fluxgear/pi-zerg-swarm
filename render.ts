@@ -1,4 +1,4 @@
-import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergState, type ZergTreeNode } from './types.js';
+import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergAgentDefinition, type ZergState, type ZergTreeNode } from './types.js';
 
 export interface RenderOptions {
   width?: number;
@@ -60,7 +60,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
     : ' | no active intervention';
 
   return fit(
-    `zerg v1.0.0-rc.2 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
+    `zerg v1.0.0-rc.3 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
     options.width,
   );
 }
@@ -292,18 +292,56 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.2 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0-rc.3 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
     'Lifecycle syntax: /zerg agent create|start|progress|stop|fail|reset <agent-id> [label|activity]',
     'Lifecycle syntax: /zerg team create|start|progress|stop|fail|reset <team-id> [label|activity]',
     'Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]',
+    'Control syntax: /zerg control status|controller pi|zerg|operator|readonly on|off|toggle|mode manual|assisted|automatic',
+    'Registry syntax: /zerg agents [list] | /zerg agents show <id>',
+    'Config syntax: /zerg config opens the Pi overlay configuration window when available',
+    'Run syntax: /zerg run <agent> <task> [--bg] [--fork] | /zerg interrupt [run-id]',
     'Monitor syntax: /zerg monitor [readonly on|off|toggle|status]',
     'Intervention syntax: /zerg intervene agent <agent-id> <message> | /zerg intervene subagent <agent-id> <message> | /zerg intervene leader <team-id> <message>',
-    'Available now: slash-free Pi command registration, aliases, lifecycle state updates, mode/intervention/monitor control commands, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
-    'Live TUI overlay is rendered with ctx.ui.custom when available; falls back to text output otherwise.',
-].join('\n');
+    'Available now: slash-free Pi command registration, aliases, lifecycle state updates, mode/intervention/monitor/control/config commands, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
+    'Live monitor/config TUI overlays are rendered with ctx.ui.custom when available; fall back to text output otherwise.',
+  ].join('\n');
+}
+
+export function renderAgentDefinitionsList(definitions: ZergAgentDefinition[], options: RenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+
+  if (definitions.length === 0) {
+    return fit('No agent definitions are currently registered.', width);
+  }
+
+  const lines = ['agent definitions:'];
+
+  for (const definition of definitions) {
+    const promptHint = definition.prompt.trim();
+    const suffix = definition.description || (promptHint ? `prompt: ${promptHint.slice(0, 32)}${promptHint.length > 32 ? '…' : ''}` : 'no prompt');
+    const line = `- ${definition.id} (${definition.source}) ${definition.label} | ${suffix}`;
+    lines.push(line);
+  }
+
+  return lines.map((line) => fit(line, width)).join('\n');
+}
+
+export function renderAgentDefinitionSummary(definition: ZergAgentDefinition, options: RenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+  const lines = [
+    `agent definition: ${definition.id}`,
+    `label: ${definition.label}`,
+    `source: ${definition.source}`,
+    `description: ${definition.description ?? 'none'}`,
+    `tools: ${definition.tools?.join(', ') || 'default'}`,
+    `disallowed-tools: ${definition.disallowedTools?.join(', ') || 'none'}`,
+    `permission-mode: ${definition.permissionMode ?? 'inherit'}`,
+  ];
+
+  return lines.map((line) => fit(line, width)).join('\n');
 }
 
 function renderAgentLine(agent: AgentIdentity, width: number, prefix: string, selectedNodeId: string | undefined, interventionTargetIds: Set<string> = new Set()): string {

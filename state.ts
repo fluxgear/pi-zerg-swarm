@@ -1,4 +1,4 @@
-import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStatePatch, type ZergStateUpdateOptions, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
+import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentDefinition, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStateListener, type ZergStatePatch, type ZergStateUpdateOptions, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
 
 const DEFAULT_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 
@@ -7,6 +7,146 @@ const DEFAULT_MODE: PermissionModeState = {
   interventionEnabled: true,
   controller: 'operator',
 };
+
+const BUILTIN_AGENT_DEFINITIONS: Record<string, ZergAgentDefinition> = {
+  generalist: {
+    id: 'generalist',
+    label: 'Generalist',
+    description: 'A versatile default agent for general implementation and follow-through.',
+    prompt: 'You are a generalist coding agent focused on pragmatic implementation and collaboration.',
+    source: 'builtin',
+    tools: ['files', 'shell', 'analysis'],
+    permissionMode: 'inherit',
+  },
+  planner: {
+    id: 'planner',
+    label: 'Planner',
+    description: 'Plans execution and decomposes work into practical, testable tasks.',
+    prompt: 'You are a planning agent that converts goals into concrete, sequenced tasks.',
+    source: 'builtin',
+    tools: ['analysis', 'search'],
+    permissionMode: 'inherit',
+  },
+  reviewer: {
+    id: 'reviewer',
+    label: 'Reviewer',
+    description: 'Reviews changes for correctness, risk, and maintainability.',
+    prompt: 'You are a reviewer focused on validating quality, correctness, and operational risk.',
+    source: 'builtin',
+    tools: ['analysis', 'search'],
+    permissionMode: 'inherit',
+    disallowedTools: ['destructive-write'],
+  },
+};
+
+export function createBuiltinAgentDefinitions(): Record<string, ZergAgentDefinition> {
+  return cloneAgentDefinitions(BUILTIN_AGENT_DEFINITIONS);
+}
+
+export function seedBuiltinAgentDefinitions(state: ZergState): ZergState {
+  let mergedDefinitions = state.agentDefinitions;
+  let changed = false;
+
+  for (const [id, definition] of Object.entries(BUILTIN_AGENT_DEFINITIONS)) {
+    if (state.agentDefinitions[id] === undefined) {
+      if (!changed) {
+        mergedDefinitions = {
+          ...state.agentDefinitions,
+          [id]: definition,
+        };
+        changed = true;
+      } else {
+        mergedDefinitions = {
+          ...mergedDefinitions,
+          [id]: definition,
+        };
+      }
+      continue;
+    }
+  }
+
+  if (!changed) {
+    return state;
+  }
+
+  return createZergState({
+    ...state,
+    agentDefinitions: mergedDefinitions,
+  });
+}
+
+export function normalizeAgentDefinitionId(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
+}
+
+export function getAgentDefinitions(state: ZergState): ZergAgentDefinition[] {
+  return Object.values(state.agentDefinitions)
+    .map((definition) => cloneAgentDefinition(definition))
+    .sort((left, right) => left.id.localeCompare(right.id) || left.label.localeCompare(right.label));
+}
+
+export function getAgentDefinition(state: ZergState, rawId: string): ZergAgentDefinition | undefined {
+  const id = normalizeAgentDefinitionId(rawId);
+  if (!id) {
+    return undefined;
+  }
+
+  const definition = state.agentDefinitions[id];
+  if (!definition) {
+    return undefined;
+  }
+
+  return cloneAgentDefinition(definition);
+}
+
+export function upsertAgentDefinition(state: ZergState, definition: ZergAgentDefinition): ZergState {
+  const id = normalizeAgentDefinitionId(definition.id);
+  if (!id) {
+    throw new Error('agent definition id must be a non-empty string');
+  }
+
+  const prompt = definition.prompt?.trim();
+  if (!prompt) {
+    throw new Error('agent definition prompt must be a non-empty string');
+  }
+
+  const normalized: ZergAgentDefinition = {
+    ...definition,
+    id,
+    label: definition.label?.trim() || definition.id,
+    prompt,
+    tools: dedupeSortedTools(definition.tools),
+    disallowedTools: dedupeSortedTools(definition.disallowedTools),
+    metadata: cloneOptional(definition.metadata, cloneExtensionFields),
+    extensions: cloneOptional(definition.extensions, cloneExtensionFields),
+  };
+
+  return updateZergState(state, {
+    agentDefinitions: {
+      ...state.agentDefinitions,
+      [id]: normalized,
+    },
+  });
+}
+
+export function removeAgentDefinition(state: ZergState, rawId: string): ZergState {
+  const id = normalizeAgentDefinitionId(rawId);
+  if (!id || state.agentDefinitions[id] === undefined) {
+    return state;
+  }
+
+  const nextDefinitions = { ...state.agentDefinitions };
+  delete nextDefinitions[id];
+
+  return updateZergState(state, {
+    agentDefinitions: nextDefinitions,
+  });
+}
 
 export function createZergState(seed: Partial<ZergState> = {}): ZergState {
   return {
@@ -23,6 +163,7 @@ export function createZergState(seed: Partial<ZergState> = {}): ZergState {
     mode: cloneMode(seed.mode),
     context: cloneContext(seed.context),
     extensions: cloneExtensionFields(seed.extensions),
+    agentDefinitions: cloneAgentDefinitions(seed.agentDefinitions),
   };
 }
 
@@ -223,6 +364,15 @@ export function resetZergState(seed?: Partial<ZergState>): ZergState {
 
 export function createZergStateContainer(seed?: Partial<ZergState>): ZergStateContainer {
   let current = createZergState(seed);
+  const listeners = new Set<ZergStateListener>();
+
+  const publish = () => {
+    const snapshot = snapshotZergState(current);
+    for (const listener of [...listeners]) {
+      listener(snapshotZergState(snapshot));
+    }
+    return snapshot;
+  };
 
   return {
     read() {
@@ -233,11 +383,17 @@ export function createZergStateContainer(seed?: Partial<ZergState>): ZergStateCo
     },
     replace(nextState: Partial<ZergState> = createZergState()) {
       current = createZergState(nextState);
-      return snapshotZergState(current);
+      return publish();
     },
     update(patch: ZergStatePatch, options?: ZergStateUpdateOptions) {
       current = updateZergState(current, patch, options);
-      return snapshotZergState(current);
+      return publish();
+    },
+    subscribe(listener: ZergStateListener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 }
@@ -539,6 +695,22 @@ function mergeStrings(existing: string[] | undefined, incoming: string[] | undef
   return merged.length > 0 ? merged : undefined;
 }
 
+function dedupeSortedTools(tools: string[] | undefined): string[] | undefined {
+  if (!tools || tools.length === 0) {
+    return undefined;
+  }
+
+  const deduped = [...new Set(tools.map((tool) => (typeof tool === 'string' ? tool.trim() : '')))]
+    .filter((tool) => tool.length > 0)
+    .sort((left, right) => left.localeCompare(right));
+
+  return deduped.length > 0 ? deduped : undefined;
+}
+
+function cloneAgentDefinitions(definitions: Record<string, ZergAgentDefinition> = {}): Record<string, ZergAgentDefinition> {
+  return Object.fromEntries(Object.entries(definitions).map(([id, definition]) => [id, cloneAgentDefinition(definition)]));
+}
+
 function cloneAgents(agents: Record<string, AgentIdentity> = {}): Record<string, AgentIdentity> {
   return Object.fromEntries(Object.entries(agents).map(([id, agent]) => [id, cloneAgent(agent)]));
 }
@@ -566,6 +738,16 @@ function cloneAgent(agent: AgentIdentity): AgentIdentity {
     runtime: cloneOptional(agent.runtime, cloneRuntimeState),
     metadata: cloneOptional(agent.metadata, cloneExtensionFields),
     extensions: cloneOptional(agent.extensions, cloneExtensionFields),
+  };
+}
+
+function cloneAgentDefinition(definition: ZergAgentDefinition): ZergAgentDefinition {
+  return {
+    ...definition,
+    tools: cloneOptional(definition.tools, cloneArray),
+    disallowedTools: cloneOptional(definition.disallowedTools, cloneArray),
+    metadata: cloneOptional(definition.metadata, cloneExtensionFields),
+    extensions: cloneOptional(definition.extensions, cloneExtensionFields),
   };
 }
 

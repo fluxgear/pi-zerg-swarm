@@ -15,6 +15,7 @@ export type ThinkingStepStatus = 'todo' | 'running' | 'blocked' | 'done' | 'fail
 export type ZergContextKind = 'command' | 'extension' | 'team' | 'agent' | 'task';
 export type ZergTreeNodeKind = 'agent' | 'task' | 'team';
 export type ZergLifecycleState = 'initializing' | 'ready' | 'resetting' | 'disposed';
+export type ZergAgentDefinitionSource = 'builtin' | 'project' | 'user' | 'runtime';
 export const ZERG_STATE_SCHEMA_VERSION = '0.2.0' as const;
 export type ZergStateSchemaVersion = typeof ZERG_STATE_SCHEMA_VERSION;
 
@@ -30,7 +31,55 @@ export interface ZergContext {
   metadata?: ZergExtensionFields;
 }
 
+export interface ZergAgentDefinition {
+  id: string;
+  label: string;
+  description?: string;
+  prompt: string;
+  source: ZergAgentDefinitionSource;
+  tools?: string[];
+  disallowedTools?: string[];
+  permissionMode?: AutomationMode | 'inherit';
+  metadata?: ZergExtensionFields;
+  extensions?: ZergExtensionFields;
+}
+
 export type PermissionModeController = 'operator' | 'automation';
+export type ZergControlController = 'operator' | 'pi' | 'zerg';
+
+export interface ZergControlAuditEntry {
+  id: string;
+  action: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface ZergControlState {
+  controller: ZergControlController;
+  selectedTargetId?: string;
+  activeRunId?: string;
+  auditLog?: ZergControlAuditEntry[];
+}
+
+export interface ZergSubagentLaunchRequest {
+  agent: string;
+  task: string;
+  background?: boolean;
+  fork?: boolean;
+}
+
+export interface ZergSubagentControlResult {
+  ok: boolean;
+  runId?: string;
+  message: string;
+}
+
+export interface ZergSubagentControlAdapter {
+  readonly kind: 'pi-slash-bridge' | 'fake' | 'unavailable';
+  launch(request: ZergSubagentLaunchRequest): ZergSubagentControlResult;
+  interrupt?(runId?: string): ZergSubagentControlResult;
+  dispose?(): void;
+}
 
 export type PermissionModeInterventionKind = 'agent' | 'subagent' | 'leader';
 
@@ -234,6 +283,7 @@ export interface ZergState {
   mode: PermissionModeState;
   context?: ZergContext;
   extensions: ZergExtensionFields;
+  agentDefinitions: Record<string, ZergAgentDefinition>;
 }
 
 export interface ZergStateUpdateOptions {
@@ -244,11 +294,14 @@ export interface ZergStateUpdateOptions {
 
 export type ZergStatePatch = Partial<ZergState> | ((state: ZergState) => Partial<ZergState> | ZergState);
 
+export type ZergStateListener = (state: ZergState) => void;
+
 export interface ZergStateContainer {
   read(): ZergState;
   snapshot(): ZergState;
   replace(nextState?: Partial<ZergState>): ZergState;
   update(patch: ZergStatePatch, options?: ZergStateUpdateOptions): ZergState;
+  subscribe?(listener: ZergStateListener): () => void;
 }
 
 export interface ThinkingStep {
@@ -285,7 +338,18 @@ export interface StructuralPiCustomComponent {
   handleInput?(data: string): unknown;
 }
 
-export type StructuralPiCustomFactory = (done?: () => void, ...args: unknown[]) => StructuralPiCustomComponent | Promise<StructuralPiCustomComponent>;
+export interface StructuralPiTuiHandle {
+  requestRender?(): void;
+}
+
+export type ZergConfigOverlayTab = 'monitor' | 'control' | 'targets' | 'config';
+
+export type StructuralPiCustomFactory = (
+  tui?: StructuralPiTuiHandle,
+  theme?: unknown,
+  keybindings?: unknown,
+  done?: () => void,
+) => StructuralPiCustomComponent | Promise<StructuralPiCustomComponent>;
 
 export interface StructuralPiCustomOptions {
   overlay?: boolean;
