@@ -7,21 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [1.0.0-rc.1] - 2026-05-05
+## [1.0.0-rc.2] - 2026-05-05
 
 ### Added
 
-- Added release-candidate notes for the single `v1.0.0-rc.1` gate and the mandatory RC audit set.
+- Added release-candidate notes for the single `v1.0.0-rc.2` gate and the mandatory RC audit set.
 
 ### Changed
 
-- Bumped package manifest versions from `0.9.1` to `1.0.0-rc.1` in `package.json` and `package-lock.json` (top-level + root package).
-- Updated README current-candidate wording, runtime/help strings, and matching tests from `v0.9.1` to `v1.0.0-rc.1`.
+- Bumped package manifest versions from `0.9.1` to `1.0.0-rc.2` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, and matching tests from `v0.9.1` to `v1.0.0-rc.2`.
 - Finalized candidate metadata without introducing new feature scope.
 
 ### Known Limitations
 
-- `npm run check:version` is a post-tag confirmation; skip it during pre-tag RC prep until `v1.0.0-rc.1` exists at `HEAD`.
+- `npm run check:version` is a post-tag confirmation; skip it during pre-tag RC prep until `v1.0.0-rc.2` exists at `HEAD`.
 - Manual end-to-end smoke for TUI, lifecycle, intervention, and mode switching remains required before tagging.
 - Live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
 

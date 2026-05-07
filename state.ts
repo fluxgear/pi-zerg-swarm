@@ -153,8 +153,10 @@ export function applyModeTransition(
       contextId,
       previousMode,
       activeIntervention: transition.clearActiveIntervention === false ? base.mode.activeIntervention : undefined,
+      ...(transition.readOnly !== undefined || base.mode.readOnly !== undefined
+        ? { readOnly: transition.readOnly ?? base.mode.readOnly }
+        : {}),
     };
-
     const event: HookLifecycleEvent = {
       id: `mode-${revision}`,
       type: 'mode',
@@ -351,6 +353,7 @@ function resolveRuntimeMode(stateMode: PermissionModeState, transition: ZergRunt
     controller: transition.mode?.controller ?? stateMode.controller,
     activeIntervention: transition.mode?.activeIntervention ?? stateMode.activeIntervention,
     contextId: transition.contextId ?? transition.mode?.contextId ?? stateMode.contextId,
+    readOnly: transition.mode?.readOnly ?? stateMode.readOnly,
   };
 }
 
@@ -644,12 +647,18 @@ function clonePermissionModeIntervention(intervention?: PermissionModeInterventi
 }
 
 function clonePermissionModeSnapshot(snapshot?: PermissionModeSnapshot): PermissionModeSnapshot {
-  return {
+  const cloned: PermissionModeSnapshot = {
     automation: snapshot?.automation ?? DEFAULT_MODE.automation,
     interventionEnabled: snapshot?.interventionEnabled ?? DEFAULT_MODE.interventionEnabled,
     controller: snapshot?.controller ?? DEFAULT_MODE.controller,
     contextId: snapshot?.contextId,
   };
+
+  if (snapshot?.readOnly !== undefined) {
+    cloned.readOnly = snapshot.readOnly;
+  }
+
+  return cloned;
 }
 
 function cloneContext(context?: ZergContext): ZergContext | undefined {

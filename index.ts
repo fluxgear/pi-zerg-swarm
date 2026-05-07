@@ -1,6 +1,6 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
-import { renderAgentTree, renderHelp, renderStatusLine } from './render.js';
+import { renderAgentTree, renderHelp, renderMonitor, renderStatusLine } from './render.js';
 import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, readSharedZergState, replaceSharedZergState, snapshotZergState } from './state.js';
 import { ZERG_COMMANDS, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type ZergCommandName, type ZergCommandResult, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer } from './types.js';
 
@@ -24,7 +24,7 @@ export interface ZergExtensionRegistration {
   dispose(): void;
 }
 
-type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene';
+type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene' | 'monitor';
 type ZergCommandDispatcher = (payload: string) => ZergCommandResult;
 type RuntimeParseResult = { ok: false; output: string } | { ok: true; transition: ZergRuntimeTransition };
 
@@ -120,8 +120,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.1 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.1 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.2 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.2 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -211,6 +211,7 @@ export function createZergCommandHandler(
     team: (payload: string) => dispatchRuntimeCommand(stateOrReader, 'team', payload, options),
     mode: (payload: string) => dispatchModeCommand(stateOrReader, payload, options),
     intervene: (payload: string) => dispatchInterventionCommand(stateOrReader, payload, options),
+    monitor: (payload: string) => dispatchMonitorCommand(stateOrReader, payload, options),
   };
 
   return (input?: string): ZergCommandResult => {
@@ -269,7 +270,7 @@ function isZergInvocationToken(value: string): value is ZergCommandName {
 }
 
 function isZergCommandTopic(value: string): value is ZergCommandTopic {
-  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene';
+  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene' || value === 'monitor';
 }
 
 function dispatchRuntimeCommand(
@@ -423,6 +424,89 @@ function dispatchInterventionCommand(
       ? `intervention recorded against leader ${parsed.targetId} (team ${parsed.teamId}): ${parsed.message}`
       : `intervention recorded against ${parsed.kind} ${parsed.targetId}: ${parsed.message}`,
   };
+}
+
+function dispatchMonitorCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
+  const normalizedPayload = tokenizeRuntimePayload(payload);
+  const normalizedTopic = normalizedPayload[0]?.toLowerCase();
+  const argument = normalizedPayload[1]?.toLowerCase();
+  const snapshot = resolveZergStateSnapshot(stateOrReader);
+
+  if (!normalizedTopic || normalizedTopic === 'status') {
+    return {
+      ok: true,
+      output: renderMonitor(snapshot, { width: PI_COMMAND_OUTPUT_WIDTH }),
+    };
+  }
+
+  if (normalizedTopic === 'readonly' || normalizedTopic === 'read-only' || normalizedTopic === 'ro') {
+    const container = getWritableStateContainer(stateOrReader);
+
+    if (!container) {
+      return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
+    }
+
+    const current = container.read();
+    const currentValue = Boolean(current.mode.readOnly);
+
+    if (!argument || argument === 'status') {
+      return {
+        ok: true,
+        output: `monitor read-only is currently ${currentValue ? 'enabled' : 'disabled'}`,
+      };
+    }
+
+    const targetValue = argument === 'on'
+      ? true
+      : argument === 'off'
+        ? false
+        : argument === 'enable'
+          ? true
+          : argument === 'disable'
+            ? false
+            : argument === 'true'
+              ? true
+              : argument === 'false'
+                ? false
+                : argument === 'toggle'
+                  ? !currentValue
+                  : undefined;
+
+    if (targetValue === undefined) {
+      return { ok: false, output: `Unknown monitor readonly value: ${argument}` };
+    }
+
+    const nextState = applyModeTransition(
+      current,
+      {
+        automation: current.mode.automation,
+        controller: current.mode.controller,
+        interventionEnabled: current.mode.interventionEnabled,
+        readOnly: targetValue,
+        reason: `read-only ${targetValue ? 'enabled' : 'disabled'}`,
+        clearActiveIntervention: false,
+      },
+      {
+        now: options.now ?? (() => new Date()),
+      },
+    );
+
+    const snapshotWithReadOnly = container.replace(nextState);
+    if (options.syncSharedState) {
+      replaceSharedZergState(snapshotWithReadOnly);
+    }
+
+    return {
+      ok: true,
+      output: renderMonitor(snapshotWithReadOnly, { width: PI_COMMAND_OUTPUT_WIDTH }),
+    };
+  }
+
+  return { ok: false, output: `Unknown monitor action: ${normalizedPayload[0] ?? ''}` };
 }
 
 
@@ -607,8 +691,53 @@ export function createPiZergCommandHandler(
   const scaffoldHandler = createZergCommandHandler(stateOrReader, options);
 
   return async (input: string, context: StructuralPiCommandContext): Promise<void> => {
+    const normalized = normalizeZergCommandInput(input);
     const result = await scaffoldHandler(input);
     const output = typeof result === 'string' ? result : result.output;
+
+    if (normalized.topic === 'monitor' && context.ui?.custom) {
+      const renderMonitorOutput = (width?: number) => {
+        if (!result.ok) {
+          return output;
+        }
+
+        return renderMonitor(resolveZergStateSnapshot(stateOrReader), {
+          width: typeof width === 'number' ? width : PI_COMMAND_OUTPUT_WIDTH,
+        });
+      };
+
+      try {
+        context.ui.custom(
+          (done?: () => void) => ({
+            render: (width?: number, _height?: number) => renderMonitorOutput(width).split('\n'),
+            invalidate: () => undefined,
+            handleInput: (data: string) => {
+              if (data === 'q' || data === 'Q' || data === '\u001b') {
+                done?.();
+              }
+            },
+          }),
+          {
+            overlay: true,
+            overlayOptions: {
+              title: 'zerg monitor',
+            },
+          },
+        );
+        return;
+      } catch {
+        try {
+          context.ui.custom((width: number) => renderMonitorOutput(width), {
+            mode: 'overlay',
+            title: 'zerg monitor',
+          });
+          return;
+        } catch {
+          // Fall back to textual output when custom overlay hooks are unavailable.
+        }
+      }
+    }
+
     context.ui?.notify?.(output, 'info');
   };
 }

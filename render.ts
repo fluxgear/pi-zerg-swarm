@@ -1,4 +1,4 @@
-import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type TaskRecord, type TeamIdentity, type ZergState, type ZergTreeNode } from './types.js';
+import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergState, type ZergTreeNode } from './types.js';
 
 export interface RenderOptions {
   width?: number;
@@ -6,6 +6,39 @@ export interface RenderOptions {
 
 const DEFAULT_WIDTH = 88;
 const MAX_RENDER_LINES = 400;
+const MAX_MONITOR_EVENTS = 8;
+
+export interface MonitorRenderOptions extends RenderOptions {
+  recentEventCount?: number;
+}
+
+export function renderMonitor(state: ZergState, options: MonitorRenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+  const snapshot = state ?? ({} as ZergState);
+  const eventCount = options.recentEventCount ?? MAX_MONITOR_EVENTS;
+  const readOnly = Boolean(snapshot.mode?.readOnly) ? 'enabled' : 'disabled';
+  const monitorEventLimit = Math.max(1, eventCount);
+  const recentEvents = [...(snapshot.events ?? [])].slice(-monitorEventLimit);
+  const lines = [
+    'zerg monitor',
+    `status: ${renderStatusLine(snapshot, { width })}`,
+    `read-only: ${readOnly}`,
+    'tree:',
+  ];
+
+  lines.push(...renderAgentTree(snapshot, { width }).split('\n').map((line) => `  ${line}`));
+  lines.push('recent events:');
+
+  if (recentEvents.length === 0) {
+    lines.push('  none');
+  } else {
+    for (const event of recentEvents) {
+      lines.push(renderMonitorEventLine(event, width));
+    }
+  }
+
+  return lines.map((line) => fit(line, width)).join('\n');
+}
 
 export function renderStatusLine(state: ZergState, options: RenderOptions = {}): string {
   const snapshot = state ?? ({} as ZergState);
@@ -27,7 +60,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
     : ' | no active intervention';
 
   return fit(
-    `zerg v1.0.0-rc.1 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
+    `zerg v1.0.0-rc.2 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
     options.width,
   );
 }
@@ -50,6 +83,13 @@ function renderInterventionMessagePreview(message: string, maxLength = 48): stri
   }
 
   return `${message.slice(0, maxLength - 1)}…`;
+}
+
+function renderMonitorEventLine(event: HookLifecycleEvent, width: number): string {
+  const action = event.action ? ` (${event.action})` : '';
+  const sequence = `#${event.revision ?? 'event'} `;
+  const details = sanitizeRuntimeActivity(event.message || event.type) || event.type;
+  return fit(`  ${sequence}${event.type}${action} ${event.createdAt} ${details}`, width);
 }
 
 export function renderAgentTree(state: ZergState, options: RenderOptions = {}): string {
@@ -252,17 +292,18 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.1 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0-rc.2 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
     'Lifecycle syntax: /zerg agent create|start|progress|stop|fail|reset <agent-id> [label|activity]',
     'Lifecycle syntax: /zerg team create|start|progress|stop|fail|reset <team-id> [label|activity]',
     'Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]',
+    'Monitor syntax: /zerg monitor [readonly on|off|toggle|status]',
     'Intervention syntax: /zerg intervene agent <agent-id> <message> | /zerg intervene subagent <agent-id> <message> | /zerg intervene leader <team-id> <message>',
-    'Available now: slash-free Pi command registration, aliases, lifecycle state updates, mode/intervention control commands, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
-    'Live TUI overlays and external process/network transport remain out of scope for this release.',
-  ].join('\n');
+    'Available now: slash-free Pi command registration, aliases, lifecycle state updates, mode/intervention/monitor control commands, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
+    'Live TUI overlay is rendered with ctx.ui.custom when available; falls back to text output otherwise.',
+].join('\n');
 }
 
 function renderAgentLine(agent: AgentIdentity, width: number, prefix: string, selectedNodeId: string | undefined, interventionTargetIds: Set<string> = new Set()): string {

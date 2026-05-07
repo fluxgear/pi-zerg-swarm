@@ -49,6 +49,7 @@ export interface PermissionModeSnapshot {
   interventionEnabled: boolean;
   controller: PermissionModeController;
   contextId?: string;
+  readOnly?: boolean;
 }
 
 export interface ZergRuntimeModeContext {
@@ -57,6 +58,7 @@ export interface ZergRuntimeModeContext {
   controller: PermissionModeController;
   activeIntervention?: PermissionModeIntervention;
   contextId?: string;
+  readOnly?: boolean;
 }
 
 export interface ZergRuntimeState {
@@ -182,6 +184,7 @@ export interface PermissionModeTransitionInput {
   interventionEnabled: boolean;
   contextId?: string;
   reason?: string;
+  readOnly?: boolean;
   clearActiveIntervention?: boolean;
 }
 
@@ -276,10 +279,29 @@ export interface ZergInternalPatchController {
 
 export type ZergCommandHandler = (input?: string) => ZergCommandResult | string | Promise<ZergCommandResult | string>;
 
+export interface StructuralPiCustomComponent {
+  render(width?: number, height?: number): string[];
+  invalidate(): void;
+  handleInput?(data: string): unknown;
+}
+
+export type StructuralPiCustomFactory = (done?: () => void, ...args: unknown[]) => StructuralPiCustomComponent | Promise<StructuralPiCustomComponent>;
+
+export interface StructuralPiCustomOptions {
+  overlay?: boolean;
+  overlayOptions?: Record<string, unknown>;
+  onHandle?(handle: unknown): void;
+  [key: string]: unknown;
+}
+
 export interface StructuralPiCommandContext {
   hasUI?: boolean;
   ui?: {
     notify?(message: string, type?: 'info' | 'warning' | 'error'): void;
+    custom?(
+      render: StructuralPiCustomFactory | ((width: number) => string),
+      options?: StructuralPiCustomOptions | Record<string, unknown>,
+    ): { close?(): void; dispose?(): void } | unknown;
   };
 }
 
