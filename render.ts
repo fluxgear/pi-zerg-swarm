@@ -1,4 +1,4 @@
-import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergAgentDefinition, type ZergState, type ZergSubagentRunSnapshot, type ZergTreeNode } from './types.js';
+import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergAgentDefinition, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergState, type ZergSubagentRunSnapshot, type ZergTreeNode } from './types.js';
 
 export interface RenderOptions {
   width?: number;
@@ -17,12 +17,15 @@ export function renderMonitor(state: ZergState, options: MonitorRenderOptions = 
   const snapshot = state ?? ({} as ZergState);
   const eventCount = options.recentEventCount ?? MAX_MONITOR_EVENTS;
   const readOnly = Boolean(snapshot.mode?.readOnly) ? 'enabled' : 'disabled';
+  const permissions = readRenderPermissionQueueState(snapshot);
+  const latestPermission = permissions.requests.filter((request) => request.status === 'pending').at(-1);
   const monitorEventLimit = Math.max(1, eventCount);
   const recentEvents = [...(snapshot.events ?? [])].slice(-monitorEventLimit);
   const lines = [
     'zerg monitor',
     `status: ${renderStatusLine(snapshot, { width })}`,
     `read-only: ${readOnly}`,
+    `permissions: ${permissions.pendingCount} pending${latestPermission ? ` latest:${renderPermissionRequestInline(latestPermission)}` : ''}`,
     'tree:',
   ];
 
@@ -58,13 +61,50 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const activeIntervention = intervention
     ? ` | intervention ${intervention.kind} ${intervention.targetId} (${renderInterventionMessagePreview(intervention.message)})`
     : ' | no active intervention';
+  const permissionQueue = readRenderPermissionQueueState(snapshot);
+  const permissions = ` | permissions ${permissionQueue.pendingCount} pending`;
 
   return fit(
-    `zerg v1.0.0-rc.6 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
+    `zerg v1.0.0-rc.7 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${permissions}${activeIntervention}`,
     options.width,
   );
 }
 
+
+function readRenderPermissionQueueState(state: ZergState): ZergPermissionQueueState {
+  const candidate = state.extensions?.zergPermissions;
+  const maxRequests = isPlainRecord(candidate) && typeof candidate.maxRequests === 'number' ? candidate.maxRequests : 50;
+  const requests = isPlainRecord(candidate) && Array.isArray(candidate.requests)
+    ? candidate.requests.filter(isRenderPermissionRequest).map(cloneRenderPermissionRequest)
+    : [];
+
+  return {
+    requests,
+    maxRequests,
+    lastRequestId: isPlainRecord(candidate) && typeof candidate.lastRequestId === 'string' ? candidate.lastRequestId : requests.at(-1)?.id,
+    pendingCount: requests.filter((request) => request.status === 'pending').length,
+  };
+}
+
+function renderPermissionRequestInline(request: ZergPermissionRequest): string {
+  const target = request.targetId ? ` target:${sanitizeRuntimeActivity(request.targetId)}` : '';
+  const summary = sanitizeRuntimeActivity(request.summary);
+  return `${request.id} [${request.status}/${request.kind}]${target} ${summary}`;
+}
+
+function cloneRenderPermissionRequest(request: ZergPermissionRequest): ZergPermissionRequest {
+  return { ...request };
+}
+
+function isRenderPermissionRequest(value: unknown): value is ZergPermissionRequest {
+  return isPlainRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.kind === 'string'
+    && typeof value.status === 'string'
+    && typeof value.requester === 'string'
+    && typeof value.summary === 'string'
+    && typeof value.createdAt === 'string';
+}
 
 function getInterventionTargetIds(mode: ZergState['mode'] = { automation: 'manual', interventionEnabled: true, controller: 'operator' } as ZergState['mode']): Set<string> {
   const targetIds = new Set<string>();
@@ -292,7 +332,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.6 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0-rc.7 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
@@ -300,6 +340,7 @@ export function renderHelp(state: ZergState, options: RenderOptions = {}): strin
     'Lifecycle syntax: /zerg team create|start|progress|stop|fail|reset <team-id> [label|activity]',
     'Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]',
     'Control syntax: /zerg control status|controller pi|zerg|operator|readonly on|off|toggle|mode manual|assisted|automatic',
+    'Permission syntax: /zerg permission status|list [all|pending|resolved]|request <kind> <target> <summary>|approve <id> [reason]|deny <id> [reason]|cancel <id> [reason]',
     'Registry syntax: /zerg agents [list] | /zerg agents show <id>',
     'Config syntax: /zerg config opens the Pi overlay configuration window when available',
     'Run syntax: /zerg run <agent> <task> [--bg] [--fresh|--fork] (fresh is default isolated launch; fork requests inherited context where supported) | /zerg runs [list] | /zerg runs show <run-id> | /zerg interrupt [run-id]',
@@ -308,6 +349,41 @@ export function renderHelp(state: ZergState, options: RenderOptions = {}): strin
     'Available now: slash-free Pi command registration, aliases, lifecycle state updates, mode/intervention/monitor/control/config commands, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
     'Live monitor/config TUI overlays are rendered with ctx.ui.custom when available; fall back to text output otherwise.',
   ].join('\n');
+}
+
+export function renderPermissionQueueStatus(queue: ZergPermissionQueueState, options: RenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+  const pending = queue.requests.filter((request) => request.status === 'pending');
+  const latest = pending.at(-1);
+  const lines = [
+    'permission queue',
+    `pending: ${queue.pendingCount}`,
+    `total: ${queue.requests.length}`,
+    `max: ${queue.maxRequests}`,
+    `latest: ${latest ? renderPermissionRequestInline(latest) : 'none'}`,
+  ];
+
+  return lines.map((line) => fit(line, width)).join('\n');
+}
+
+export function renderPermissionQueueList(queue: ZergPermissionQueueState, filter: 'all' | 'pending' | 'resolved' = 'pending', options: RenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+  const requests = queue.requests.filter((request) => filter === 'all'
+    ? true
+    : filter === 'pending'
+      ? request.status === 'pending'
+      : request.status !== 'pending');
+
+  if (requests.length === 0) {
+    return fit(`permission queue: no ${filter} requests`, width);
+  }
+
+  const lines = [`permission requests (${filter}):`];
+  for (const request of requests.slice(-20)) {
+    lines.push(`- ${renderPermissionRequestInline(request)}`);
+  }
+
+  return lines.map((line) => fit(line, width)).join('\n');
 }
 
 export function renderAgentDefinitionsList(definitions: ZergAgentDefinition[], options: RenderOptions = {}): string {
@@ -649,6 +725,15 @@ function sanitizeRuntimeActivity(activity: string): string {
     .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function recordValues<T>(values: Record<string, T> | undefined): T[] {

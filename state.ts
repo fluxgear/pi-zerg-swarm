@@ -1,4 +1,4 @@
-import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentDefinition, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStateListener, type ZergStatePatch, type ZergStateUpdateOptions, type ZergSubagentRunSnapshot, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
+import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentDefinition, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergPermissionDecision, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergPermissionRequester, type ZergPermissionRequestKind, type ZergPermissionRequestStatus, type ZergPermissionResolver, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStateListener, type ZergStatePatch, type ZergStateUpdateOptions, type ZergSubagentRunSnapshot, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
 
 const DEFAULT_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 
@@ -290,6 +290,208 @@ export function selectNode(state: ZergState, selectedNodeId: string | undefined)
 }
 
 export const MAX_INTERVENTION_MESSAGE_LENGTH = 240;
+export const DEFAULT_PERMISSION_QUEUE_MAX_REQUESTS = 50;
+export const MAX_PERMISSION_SUMMARY_LENGTH = 160;
+export const MAX_PERMISSION_DETAILS_LENGTH = 480;
+export const MAX_PERMISSION_REASON_LENGTH = 240;
+const ZERG_PERMISSION_EXTENSION_KEY = 'zergPermissions';
+
+export interface EnqueuePermissionRequestInput {
+  kind: ZergPermissionRequestKind;
+  targetId?: string;
+  agentId?: string;
+  runId?: string;
+  requester?: ZergPermissionRequester;
+  summary: string;
+  details?: string;
+  expiresAt?: string;
+  metadata?: ZergExtensionFields;
+}
+
+export interface PermissionQueueMutationOptions extends ZergRuntimeTransitionOptions {
+  id?: string;
+  maxRequests?: number;
+  resolvedBy?: ZergPermissionResolver;
+  reason?: string;
+}
+
+export function getPermissionQueueState(state: ZergState): ZergPermissionQueueState {
+  return clonePermissionQueueState(readPermissionQueueCandidate(state), DEFAULT_PERMISSION_QUEUE_MAX_REQUESTS);
+}
+
+export function getPendingPermissionRequests(state: ZergState): ZergPermissionRequest[] {
+  return getPermissionQueueState(state).requests
+    .filter((request) => request.status === 'pending')
+    .map(clonePermissionRequest);
+}
+
+export function enqueuePermissionRequest(
+  state: ZergState,
+  input: EnqueuePermissionRequestInput,
+  options: PermissionQueueMutationOptions = {},
+): ZergState {
+  const timestamp = resolveStateTransitionTimestamp(state, options);
+  const maxRequests = normalizePermissionQueueMax(options.maxRequests ?? getPermissionQueueState(state).maxRequests);
+  const summary = sanitizePermissionText(input.summary, MAX_PERMISSION_SUMMARY_LENGTH);
+  const details = sanitizeOptionalPermissionText(input.details, MAX_PERMISSION_DETAILS_LENGTH);
+  const targetId = sanitizeOptionalPermissionText(input.targetId, MAX_PERMISSION_SUMMARY_LENGTH);
+  const agentId = sanitizeOptionalPermissionText(input.agentId, MAX_PERMISSION_SUMMARY_LENGTH);
+  const runId = sanitizeOptionalPermissionText(input.runId, MAX_PERMISSION_SUMMARY_LENGTH);
+
+  if (!summary) {
+    throw new Error('permission request summary must be non-empty');
+  }
+
+  return updateZergState(state, (base) => {
+    const revision = base.revision + 1;
+    const currentQueue = getPermissionQueueState(base);
+    const request: ZergPermissionRequest = {
+      id: sanitizePermissionId(options.id) || `perm-${revision}`,
+      kind: input.kind,
+      status: 'pending',
+      requester: input.requester ?? 'operator',
+      summary,
+      createdAt: timestamp,
+      ...(targetId ? { targetId } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(runId ? { runId } : {}),
+      ...(details ? { details } : {}),
+      ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+      metadata: cloneOptional(input.metadata, cloneExtensionFields),
+    };
+    const requests = trimPermissionRequests([...currentQueue.requests, request], maxRequests);
+    const queue = clonePermissionQueueState({
+      requests,
+      maxRequests,
+      lastRequestId: request.id,
+      pendingCount: countPendingPermissionRequests(requests),
+    }, maxRequests);
+    const event: HookLifecycleEvent = {
+      id: `permission-${revision}`,
+      type: 'permission',
+      message: formatPermissionRequestEventMessage(request),
+      sequence: revision,
+      revision,
+      createdAt: timestamp,
+    };
+
+    return {
+      extensions: {
+        ...base.extensions,
+        [ZERG_PERMISSION_EXTENSION_KEY]: queue,
+      },
+      events: appendRuntimeEvent(base.events, event, options.maxEvents),
+    };
+  }, { updatedAt: timestamp });
+}
+
+export function resolvePermissionRequest(
+  state: ZergState,
+  requestId: string,
+  decision: ZergPermissionDecision,
+  options: PermissionQueueMutationOptions = {},
+): ZergState {
+  const queue = getPermissionQueueState(state);
+  const normalizedId = sanitizePermissionId(requestId);
+  const existing = queue.requests.find((request) => request.id === normalizedId);
+  if (!existing || existing.status !== 'pending') {
+    return state;
+  }
+
+  const timestamp = resolveStateTransitionTimestamp(state, options);
+  const nextStatus = permissionStatusForDecision(decision);
+  const reason = sanitizeOptionalPermissionText(options.reason, MAX_PERMISSION_REASON_LENGTH);
+  const resolvedBy = options.resolvedBy ?? (decision === 'expire' ? 'zerg' : 'operator');
+  const maxRequests = normalizePermissionQueueMax(options.maxRequests ?? queue.maxRequests);
+
+  return updateZergState(state, (base) => {
+    const revision = base.revision + 1;
+    const currentQueue = getPermissionQueueState(base);
+    const requests = trimPermissionRequests(currentQueue.requests.map((request) => {
+      if (request.id !== normalizedId) {
+        return request;
+      }
+
+      return clonePermissionRequest({
+        ...request,
+        status: nextStatus,
+        resolvedAt: timestamp,
+        resolvedBy,
+        ...(reason ? { decisionReason: reason } : {}),
+      });
+    }), maxRequests);
+    const resolved = requests.find((request) => request.id === normalizedId) ?? existing;
+    const nextQueue = clonePermissionQueueState({
+      requests,
+      maxRequests,
+      lastRequestId: currentQueue.lastRequestId,
+      pendingCount: countPendingPermissionRequests(requests),
+    }, maxRequests);
+    const event: HookLifecycleEvent = {
+      id: `permission-${revision}`,
+      type: 'permission',
+      message: formatPermissionResolutionEventMessage(resolved, decision, reason),
+      sequence: revision,
+      revision,
+      createdAt: timestamp,
+    };
+
+    return {
+      extensions: {
+        ...base.extensions,
+        [ZERG_PERMISSION_EXTENSION_KEY]: nextQueue,
+      },
+      events: appendRuntimeEvent(base.events, event, options.maxEvents),
+    };
+  }, { updatedAt: timestamp });
+}
+
+export function expirePermissionRequests(
+  state: ZergState,
+  options: PermissionQueueMutationOptions = {},
+): ZergState {
+  const timestamp = resolveStateTransitionTimestamp(state, options);
+  const queue = getPermissionQueueState(state);
+  const expiringIds = queue.requests
+    .filter((request) => request.status === 'pending' && request.expiresAt !== undefined && request.expiresAt <= timestamp)
+    .map((request) => request.id);
+
+  if (expiringIds.length === 0) {
+    return state;
+  }
+
+  const maxRequests = normalizePermissionQueueMax(options.maxRequests ?? queue.maxRequests);
+  return updateZergState(state, (base) => {
+    const revision = base.revision + 1;
+    const currentQueue = getPermissionQueueState(base);
+    const expiring = new Set(expiringIds);
+    const requests = trimPermissionRequests(currentQueue.requests.map((request) => expiring.has(request.id)
+      ? clonePermissionRequest({ ...request, status: 'expired', resolvedAt: timestamp, resolvedBy: options.resolvedBy ?? 'zerg' })
+      : request), maxRequests);
+    const nextQueue = clonePermissionQueueState({
+      requests,
+      maxRequests,
+      lastRequestId: currentQueue.lastRequestId,
+      pendingCount: countPendingPermissionRequests(requests),
+    }, maxRequests);
+    const event: HookLifecycleEvent = {
+      id: `permission-${revision}`,
+      type: 'permission',
+      message: `permission expired: ${expiringIds.join(', ')}`,
+      sequence: revision,
+      revision,
+      createdAt: timestamp,
+    };
+
+    return {
+      extensions: {
+        ...base.extensions,
+        [ZERG_PERMISSION_EXTENSION_KEY]: nextQueue,
+      },
+      events: appendRuntimeEvent(base.events, event, options.maxEvents),
+    };
+  }, { updatedAt: timestamp });
+}
 
 export function setMode(state: ZergState, mode: Partial<PermissionModeState>): ZergState {
   return updateZergState(state, {
@@ -773,6 +975,146 @@ function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
     updatedAt: agent.runtime?.updatedAt,
     metadata: cloneOptional(metadata, cloneExtensionFields),
   };
+}
+
+function readPermissionQueueCandidate(state: ZergState): Partial<ZergPermissionQueueState> | undefined {
+  const candidate = state.extensions[ZERG_PERMISSION_EXTENSION_KEY];
+  return isPlainRecord(candidate) ? candidate as Partial<ZergPermissionQueueState> : undefined;
+}
+
+function clonePermissionQueueState(
+  queue: Partial<ZergPermissionQueueState> | undefined,
+  fallbackMaxRequests: number,
+): ZergPermissionQueueState {
+  const maxRequests = normalizePermissionQueueMax(queue?.maxRequests ?? fallbackMaxRequests);
+  const rawRequests = Array.isArray(queue?.requests) ? queue.requests : [];
+  const requests = trimPermissionRequests(rawRequests
+    .filter(isPermissionRequestLike)
+    .map((request) => clonePermissionRequest(request)), maxRequests);
+  const lastRequestId = typeof queue?.lastRequestId === 'string' && queue.lastRequestId.trim()
+    ? queue.lastRequestId.trim()
+    : requests.at(-1)?.id;
+
+  return {
+    requests,
+    maxRequests,
+    lastRequestId,
+    pendingCount: countPendingPermissionRequests(requests),
+  };
+}
+
+function clonePermissionRequest(request: ZergPermissionRequest): ZergPermissionRequest {
+  return {
+    id: request.id,
+    kind: request.kind,
+    status: request.status,
+    requester: request.requester,
+    summary: request.summary,
+    createdAt: request.createdAt,
+    targetId: request.targetId,
+    agentId: request.agentId,
+    runId: request.runId,
+    details: request.details,
+    expiresAt: request.expiresAt,
+    resolvedAt: request.resolvedAt,
+    resolvedBy: request.resolvedBy,
+    decisionReason: request.decisionReason,
+    metadata: cloneOptional(request.metadata, cloneExtensionFields),
+  };
+}
+
+function isPermissionRequestLike(value: unknown): value is ZergPermissionRequest {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+
+  return typeof value.id === 'string'
+    && isPermissionRequestKind(value.kind)
+    && isPermissionRequestStatus(value.status)
+    && isPermissionRequester(value.requester)
+    && typeof value.summary === 'string'
+    && typeof value.createdAt === 'string';
+}
+
+function isPermissionRequestKind(value: unknown): value is ZergPermissionRequestKind {
+  return value === 'run' || value === 'interrupt' || value === 'tool' || value === 'mode' || value === 'intervention' || value === 'adapter';
+}
+
+function isPermissionRequestStatus(value: unknown): value is ZergPermissionRequestStatus {
+  return value === 'pending' || value === 'approved' || value === 'denied' || value === 'cancelled' || value === 'expired';
+}
+
+function isPermissionRequester(value: unknown): value is ZergPermissionRequester {
+  return value === 'operator' || value === 'pi' || value === 'zerg' || value === 'adapter';
+}
+
+function normalizePermissionQueueMax(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_PERMISSION_QUEUE_MAX_REQUESTS;
+}
+
+function trimPermissionRequests(requests: ZergPermissionRequest[], maxRequests: number): ZergPermissionRequest[] {
+  const normalizedMax = normalizePermissionQueueMax(maxRequests);
+  const cloned = requests.map(clonePermissionRequest);
+  if (cloned.length <= normalizedMax) {
+    return cloned;
+  }
+
+  const pending = cloned.filter((request) => request.status === 'pending');
+  if (pending.length >= normalizedMax) {
+    return pending.slice(-normalizedMax);
+  }
+
+  const resolvedSlots = normalizedMax - pending.length;
+  const resolved = cloned.filter((request) => request.status !== 'pending').slice(-resolvedSlots);
+  const selected = new Set([...pending, ...resolved]);
+  return cloned.filter((request) => selected.has(request));
+}
+
+function countPendingPermissionRequests(requests: readonly ZergPermissionRequest[]): number {
+  return requests.filter((request) => request.status === 'pending').length;
+}
+
+function sanitizePermissionId(value: string | undefined): string {
+  return sanitizePermissionText(value ?? '', MAX_PERMISSION_SUMMARY_LENGTH).replace(/\s+/g, '-');
+}
+
+function sanitizePermissionText(value: string, maxLength: number): string {
+  return value
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function sanitizeOptionalPermissionText(value: string | undefined, maxLength: number): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const sanitized = sanitizePermissionText(value, maxLength);
+  return sanitized || undefined;
+}
+
+function permissionStatusForDecision(decision: ZergPermissionDecision): Exclude<ZergPermissionRequestStatus, 'pending'> {
+  switch (decision) {
+    case 'approve':
+      return 'approved';
+    case 'deny':
+      return 'denied';
+    case 'cancel':
+      return 'cancelled';
+    case 'expire':
+      return 'expired';
+  }
+}
+
+function formatPermissionRequestEventMessage(request: ZergPermissionRequest): string {
+  const target = request.targetId ? ` ${request.targetId}` : '';
+  return `permission requested: ${request.id} ${request.kind}${target} - ${request.summary}`;
+}
+
+function formatPermissionResolutionEventMessage(request: ZergPermissionRequest, decision: ZergPermissionDecision, reason: string | undefined): string {
+  return `permission ${decision}: ${request.id}${reason ? ` - ${reason}` : ''}`;
 }
 
 function cloneAgentDefinitions(definitions: Record<string, ZergAgentDefinition> = {}): Record<string, ZergAgentDefinition> {

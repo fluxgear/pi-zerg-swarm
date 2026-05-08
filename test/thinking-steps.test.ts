@@ -4,8 +4,8 @@ import test from 'node:test';
 import { createPiZergCommandHandler, createZergCommandHandler, registerZergSwarmExtension, type ZergExtensionRegistration } from '../index.js';
 import { installInternalPatch } from '../internal-patch.js';
 import { deriveThinkingSteps } from '../parse.js';
-import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderStatusLine } from '../render.js';
-import { appendHookEvent, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createBuiltinAgentDefinitions, createZergState, createZergStateContainer, createZergSubagentRunSnapshot, getAgentDefinition, getAgentDefinitions, getCurrentAgents, getCurrentMode, getCurrentTasks, getCurrentTeams, getCurrentTree, getSelectedTreeNode, readSharedZergState, removeAgentDefinition, replaceSharedZergState, replayRuntimeTransitions, resetZergState, selectNode, setMode, snapshotZergState, upsertAgentDefinition, updateSharedZergState, updateZergState, upsertAgent, upsertTeam, upsertTreeNode } from '../state.js';
+import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderStatusLine } from '../render.js';
+import { appendHookEvent, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createBuiltinAgentDefinitions, createZergState, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getCurrentAgents, getCurrentMode, getCurrentTasks, getCurrentTeams, getCurrentTree, getPendingPermissionRequests, getPermissionQueueState, getSelectedTreeNode, readSharedZergState, removeAgentDefinition, replaceSharedZergState, replayRuntimeTransitions, resetZergState, resolvePermissionRequest, selectNode, setMode, snapshotZergState, upsertAgentDefinition, updateSharedZergState, updateZergState, upsertAgent, upsertTeam, upsertTreeNode } from '../state.js';
 import { ZERG_STATE_SCHEMA_VERSION, type HookLifecycleEvent, type StructuralPiCommandContext, type StructuralPiCommandOptions, type TeamIdentity, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchRequest, type ZergTreeNode } from '../types.js';
 
 type AssertAssignable<T extends true> = T;
@@ -604,7 +604,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.6 internal patch unavailable; command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.7 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -617,11 +617,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.6 internal patch unavailable; command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.7 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.6 internal patch unavailable; command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.7 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -941,12 +941,215 @@ test('applyInterventionRecord sanitizes messages and forces operator interventio
   assert.deepEqual(event.previousMode, previousMode);
 });
 
+test('permission queue helpers enqueue resolve trim and clone records', () => {
+  const initial = createZergState();
+  const queued = enqueuePermissionRequest(initial, {
+    kind: 'run',
+    targetId: 'worker\nagent',
+    requester: 'operator',
+    summary: '  Run\nworker\u0000 now  ',
+    details: 'details\nline',
+    metadata: { nested: { tags: ['original'] } },
+  }, {
+    id: 'perm-custom',
+    now: () => new Date('2026-05-08T21:00:00.000Z'),
+    maxRequests: 3,
+  });
+
+  assert.equal(initial.events.length, 0);
+  assert.equal(queued.revision, 1);
+  assert.equal(queued.events[0]?.type, 'permission');
+  assert.equal(queued.events[0]?.message, 'permission requested: perm-custom run worker agent - Run worker now');
+
+  const queue = getPermissionQueueState(queued);
+  assert.equal(queue.pendingCount, 1);
+  assert.equal(queue.lastRequestId, 'perm-custom');
+  assert.equal(queue.requests[0]?.summary, 'Run worker now');
+  assert.equal(queue.requests[0]?.targetId, 'worker agent');
+  assert.equal(queue.requests[0]?.details, 'details line');
+
+  queue.requests[0]!.summary = 'mutated';
+  (queue.requests[0]!.metadata!.nested as { tags: string[] }).tags.push('mutated');
+  assert.equal(getPermissionQueueState(queued).requests[0]?.summary, 'Run worker now');
+  assert.deepEqual(((getPermissionQueueState(queued).requests[0]?.metadata?.nested as { tags: string[] }).tags), ['original']);
+
+  const approved = resolvePermissionRequest(queued, 'perm-custom', 'approve', {
+    now: () => new Date('2026-05-08T21:01:00.000Z'),
+    reason: '  looks\nokay  ',
+  });
+  assert.equal(getPermissionQueueState(approved).requests[0]?.status, 'approved');
+  assert.equal(getPermissionQueueState(approved).requests[0]?.decisionReason, 'looks okay');
+  assert.equal(approved.events.at(-1)?.message, 'permission approve: perm-custom - looks okay');
+
+  const unchangedUnknown = resolvePermissionRequest(approved, 'missing', 'deny');
+  assert.deepEqual(unchangedUnknown, approved);
+  const unchangedResolved = resolvePermissionRequest(approved, 'perm-custom', 'deny');
+  assert.deepEqual(unchangedResolved, approved);
+
+  let bounded = approved;
+  bounded = enqueuePermissionRequest(bounded, { kind: 'tool', targetId: 'tool-1', summary: 'tool one' }, { id: 'perm-2', maxRequests: 3 });
+  bounded = enqueuePermissionRequest(bounded, { kind: 'tool', targetId: 'tool-2', summary: 'tool two' }, { id: 'perm-3', maxRequests: 3 });
+  bounded = enqueuePermissionRequest(bounded, { kind: 'tool', targetId: 'tool-3', summary: 'tool three' }, { id: 'perm-4', maxRequests: 3 });
+  assert.deepEqual(getPermissionQueueState(bounded).requests.map((request) => request.id), ['perm-2', 'perm-3', 'perm-4']);
+  assert.equal(getPermissionQueueState(bounded).pendingCount, 3);
+});
+
+test('permission command surface supports request list approve deny and cancel without mutating invalid cases', () => {
+  const container = createZergStateContainer();
+  const handler = createZergCommandHandler(container, { now: () => new Date('2026-05-08T21:05:00.000Z') });
+
+  const requested = handler('/zerg permission request run worker "Needs\noperator"');
+  assert.equal(requested.ok, true);
+  assert.equal(requested.output, 'permission request queued: perm-1');
+  assert.equal(getPermissionQueueState(container.snapshot()).pendingCount, 1);
+
+  const status = handler('/zerg permission status');
+  assert.equal(status.ok, true);
+  assert.ok(status.output.includes('pending: 1'));
+  assert.ok(status.output.includes('perm-1'));
+
+  const list = handler('/zerg permission list all');
+  assert.equal(list.ok, true);
+  assert.ok(list.output.includes('perm-1 [pending/run] target:worker Needs operator'));
+
+  const beforeInvalid = container.snapshot();
+  assert.equal(handler('/zerg permission request banana worker nope').output, 'Unknown permission request kind: banana');
+  assert.deepEqual(container.snapshot(), beforeInvalid);
+  assert.equal(handler(`/zerg permission request run worker "${String.fromCharCode(0)}"`).output, 'Usage: /zerg permission request <kind> <target> <summary...>');
+  assert.deepEqual(container.snapshot(), beforeInvalid);
+  assert.equal(handler('/zerg permission approve missing').output, 'Unknown permission request: missing');
+  assert.deepEqual(container.snapshot(), beforeInvalid);
+
+  const approved = handler('/zerg permission approve perm-1 reviewed');
+  assert.equal(approved.ok, true);
+  assert.equal(approved.output, 'permission request perm-1 approved');
+  assert.equal(getPermissionQueueState(container.snapshot()).requests[0]?.status, 'approved');
+
+  const beforeResolved = container.snapshot();
+  assert.equal(handler('/zerg permission deny perm-1 later').output, 'Permission request perm-1 is already approved.');
+  assert.deepEqual(container.snapshot(), beforeResolved);
+
+  handler('/zerg permission request interrupt run-1 stop it');
+  assert.equal(handler('/zerg permission deny perm-3 unsafe').output, 'permission request perm-3 denied');
+  handler('/zerg permission request adapter bridge check');
+  assert.equal(handler('/zerg permission cancel perm-5 duplicate').output, 'permission request perm-5 cancelled');
+  assert.ok(handler('/zerg permission list resolved').output.includes('perm-5 [cancelled/adapter]'));
+});
+
+
+test('read-only run queues permission without launching adapter', () => {
+  const launches: ZergSubagentLaunchRequest[] = [];
+  const adapter: ZergSubagentControlAdapter = {
+    kind: 'fake',
+    launch(request) {
+      launches.push(request);
+      return { ok: true, message: 'unexpected' };
+    },
+  };
+  const container = createZergStateContainer(createZergState({ mode: { automation: 'manual', interventionEnabled: true, controller: 'operator', readOnly: true } }));
+  const handler = createZergCommandHandler(container, { subagentAdapter: adapter, now: () => new Date('2026-05-08T21:10:00.000Z') });
+
+  const result = handler('/zerg run worker "blocked task" --fork');
+  assert.equal(result.ok, false);
+  assert.ok(result.output.includes('queued for permission as perm-1'));
+  assert.equal(launches.length, 0);
+  assert.deepEqual(container.snapshot().agents, {});
+  assert.deepEqual(container.snapshot().tasks, {});
+  const request = getPermissionQueueState(container.snapshot()).requests[0];
+  assert.equal(request?.kind, 'run');
+  assert.equal(request?.summary, 'Run worker: blocked task');
+  assert.deepEqual(request?.metadata, { agent: 'worker', task: 'blocked task', launchMode: 'fork', background: false });
+});
+
+
+test('read-only interrupt blocks adapter calls for read-only snapshot sources', () => {
+  let interrupted = 0;
+  const handler = createZergCommandHandler(createZergState({
+    mode: { automation: 'manual', interventionEnabled: true, controller: 'operator', readOnly: true },
+  }), {
+    subagentAdapter: {
+      kind: 'fake',
+      launch() {
+        return { ok: true, message: 'unused' };
+      },
+      interrupt(runId) {
+        interrupted += 1;
+        return { ok: true, runId, message: `interrupted ${runId}` };
+      },
+    },
+  });
+
+  const result = handler('/zerg interrupt zerg-run-1');
+  assert.equal(result.ok, false);
+  assert.equal(result.output, 'zerg interrupt is blocked while read-only is enabled and requires writable zerg state to queue permission.');
+  assert.equal(interrupted, 0);
+});
+
+
+test('read-only interrupt queues permission without emitting cancel', async () => {
+  const eventBus = createFakePiEventBus();
+  const notifications: string[] = [];
+  let commandHandler: ((input: string, ctx: StructuralPiCommandContext) => Promise<void> | void) | undefined;
+  const registration = registerZergSwarmExtension({
+    events: eventBus,
+    registerCommand(_name: string, options: StructuralPiCommandOptions) {
+      commandHandler = options.handler;
+      return { dispose: () => undefined };
+    },
+  }, { now: () => new Date('2026-05-08T21:11:00.000Z') });
+
+  try {
+    assert.ok(commandHandler);
+    await commandHandler!('/zerg control readonly on', { ui: { notify: () => undefined } } as StructuralPiCommandContext);
+    eventBus.emitted.length = 0;
+    await commandHandler!('/zerg interrupt zerg-run-1', {
+      ui: {
+        notify(message: string) {
+          notifications.push(message);
+        },
+      },
+    } as StructuralPiCommandContext);
+
+    assert.equal(eventBus.emitted.some((entry) => entry.eventName === 'subagent:slash:cancel'), false);
+    assert.ok(notifications.at(-1)?.includes('queued for permission as perm-'));
+    const request = getPermissionQueueState(registration.state).requests.at(-1);
+    assert.equal(request?.kind, 'interrupt');
+    assert.equal(request?.runId, 'zerg-run-1');
+  } finally {
+    registration.dispose();
+    replaceSharedZergState();
+  }
+});
+
+
+test('permission rendering surfaces pending count and sanitized summaries', () => {
+  const state = enqueuePermissionRequest(createZergState(), {
+    kind: 'adapter',
+    targetId: 'bridge',
+    summary: 'Need\nreview\u0000 now',
+  }, { id: 'perm-render', now: () => new Date('2026-05-08T21:12:00.000Z') });
+  const status = renderStatusLine(state, { width: 240 });
+  const monitor = renderMonitor(state, { width: 240 });
+  const help = renderHelp(state, { width: 240 });
+  const list = renderPermissionQueueList(getPermissionQueueState(state), 'pending', { width: 240 });
+  const configContainer = createZergStateContainer(state);
+  const config = createZergCommandHandler(configContainer)('/zerg config');
+
+  assert.ok(status.includes('permissions 1 pending'));
+  assert.ok(monitor.includes('permissions: 1 pending latest:perm-render [pending/adapter] target:bridge Need review now'));
+  assert.ok(help.includes('Permission syntax: /zerg permission status'));
+  assert.ok(list.includes('perm-render [pending/adapter] target:bridge Need review now'));
+  assert.ok(config.output.includes('permissions: 1 pending latest:perm-render adapter Need review now'));
+  assert.equal(monitor.includes('Need\nreview'), false);
+});
+
+
 test('createZergCommandHandler applies mode status transitions and revert', () => {
   const readOnlyHandler = createZergCommandHandler(createZergState());
 
   const readOnlyStatus = readOnlyHandler('/zerg mode status');
   assert.equal(readOnlyStatus.ok, true);
-  assert.ok(readOnlyStatus.output.includes('zerg v1.0.0-rc.6 command surface'));
+  assert.ok(readOnlyStatus.output.includes('zerg v1.0.0-rc.7 command surface'));
   assert.ok(readOnlyStatus.output.includes('control operator'));
   assert.ok(readOnlyStatus.output.includes('mode manual'));
   assert.ok(readOnlyStatus.output.includes('no active intervention'));
@@ -1155,7 +1358,7 @@ test('render surfaces expose control intervention status tree markers and help s
   assert.ok(idleStatus.includes('control operator'));
   assert.ok(idleStatus.includes('mode manual'));
   assert.ok(idleStatus.includes('no active intervention'));
-  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.0-rc.6 command-surface scaffold');
+  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.0-rc.7 command-surface scaffold');
   assert.ok(idleHelp.includes('Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]'));
   assert.ok(idleHelp.includes('Monitor syntax: /zerg monitor [readonly on|off|toggle|status]'));
   assert.ok(idleHelp.includes('Registry syntax: /zerg agents [list] | /zerg agents show <id>'));
@@ -1222,7 +1425,7 @@ test('renderMonitor combines monitor header, runtime status, tree, and recent ev
   const monitor = renderMonitor(state, { width: 240, recentEventCount: 2 });
 
   assert.ok(monitor.includes('zerg monitor'));
-  assert.ok(monitor.includes('status: zerg v1.0.0-rc.6 command surface'));
+  assert.ok(monitor.includes('status: zerg v1.0.0-rc.7 command surface'));
   assert.ok(monitor.includes('read-only: enabled'));
   assert.ok(monitor.includes('tree:'));
   assert.ok(monitor.includes('recent events:'));
@@ -2328,7 +2531,7 @@ test('render monitoring summarizes runtime health activity without mutation', ()
   const status = renderStatusLine(state, { width: 240 });
   const tree = renderAgentTree(state, { width: 240 });
 
-  assert.ok(status.includes('zerg v1.0.0-rc.6 command surface'));
+  assert.ok(status.includes('zerg v1.0.0-rc.7 command surface'));
   assert.ok(status.includes('agents 1 (1 running)'));
   assert.ok(status.includes('teams 1 (0 running)'));
   assert.ok(status.includes('unhealthy 1'));
@@ -2567,7 +2770,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.6 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.7 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -2587,8 +2790,8 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
   try {
     assert.equal(registration.patchInstalled, true);
     assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
-    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.6 internal patch path active']);
-    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.6 internal patch path active']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.7 internal patch path active']);
+    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.7 internal patch path active']);
 
     eventBus.emit('zerg:smoke');
 
@@ -2612,7 +2815,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
     });
 
     assert.equal(notifications.length, 1);
-    assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.6 command surface'));
+    assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.7 command surface'));
     assert.equal(notifications[0]?.type, 'info');
   } finally {
     registration.dispose();

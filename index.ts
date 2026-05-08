@@ -1,8 +1,8 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
-import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderStatusLine, renderZergSubagentRunList, renderZergSubagentRunSummary } from './render.js';
-import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, getAgentDefinition, getAgentDefinitions, getSubagentRunSnapshot, getSubagentRunSnapshots, readSharedZergState, replaceSharedZergState, seedBuiltinAgentDefinitions, snapshotZergState, upsertTask } from './state.js';
-import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
+import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderPermissionQueueStatus, renderStatusLine, renderZergSubagentRunList, renderZergSubagentRunSummary } from './render.js';
+import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, readSharedZergState, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertTask } from './state.js';
+import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
 
 type ZergIdFactory = {
   runId?: () => string;
@@ -31,7 +31,7 @@ export interface ZergExtensionRegistration {
   dispose(): void;
 }
 
-type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene' | 'monitor' | 'control' | 'config' | 'run' | 'interrupt' | 'agents' | 'runs';
+type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene' | 'monitor' | 'control' | 'config' | 'run' | 'interrupt' | 'agents' | 'runs' | 'permission';
 type ZergCommandDispatcher = (payload: string) => ZergCommandResult;
 type RuntimeParseResult = { ok: false; output: string } | { ok: true; transition: ZergRuntimeTransition };
 
@@ -148,8 +148,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.6 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.6 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.7 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.7 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -248,10 +248,11 @@ export function createZergCommandHandler(
     intervene: (payload: string) => dispatchInterventionCommand(stateOrReader, payload, options),
     monitor: (payload: string) => dispatchMonitorCommand(stateOrReader, payload, options),
     control: (payload: string) => dispatchControlCommand(stateOrReader, payload, options),
+    permission: (payload: string) => dispatchPermissionCommand(stateOrReader, payload, options),
     config: () => ({ ok: true, output: renderZergConfigOverlay(resolveZergStateSnapshot(stateOrReader), { width: PI_COMMAND_OUTPUT_WIDTH, activeTab: 'config', selectedIndex: 0 }) }),
     run: (payload: string) => dispatchRunCommand(stateOrReader, payload, options),
     runs: (payload: string) => dispatchRunsCommand(stateOrReader, payload, options),
-    interrupt: (payload: string) => dispatchInterruptCommand(payload, options),
+    interrupt: (payload: string) => dispatchInterruptCommand(stateOrReader, payload, options),
   };
 
   return (input?: string): ZergCommandResult => {
@@ -310,7 +311,7 @@ function isZergInvocationToken(value: string): value is ZergCommandName {
 }
 
 function isZergCommandTopic(value: string): value is ZergCommandTopic {
-  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agents' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene' || value === 'monitor' || value === 'control' || value === 'config' || value === 'run' || value === 'runs' || value === 'interrupt';
+  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agents' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene' || value === 'monitor' || value === 'control' || value === 'permission' || value === 'config' || value === 'run' || value === 'runs' || value === 'interrupt';
 }
 
 function dispatchAgentDefinitionsCommand(
@@ -556,6 +557,91 @@ function dispatchMonitorCommand(
   return { ok: false, output: `Unknown monitor action: ${normalizedPayload[0] ?? ''}` };
 }
 
+function dispatchPermissionCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
+  const tokens = tokenizeRuntimePayload(payload);
+  const action = tokens[0]?.toLowerCase() ?? 'status';
+  const snapshot = resolveZergStateSnapshot(stateOrReader);
+
+  if (action === 'status') {
+    return { ok: true, output: renderPermissionQueueStatus(getPermissionQueueState(snapshot), { width: PI_COMMAND_OUTPUT_WIDTH }) };
+  }
+
+  if (action === 'list' || action === 'ls') {
+    const filterToken = tokens[1]?.toLowerCase() ?? 'pending';
+    if (!isPermissionListFilter(filterToken)) {
+      return { ok: false, output: `Unknown permission list filter: ${tokens[1] ?? ''}` };
+    }
+
+    return { ok: true, output: renderPermissionQueueList(getPermissionQueueState(snapshot), filterToken, { width: PI_COMMAND_OUTPUT_WIDTH }) };
+  }
+
+  const container = getWritableStateContainer(stateOrReader);
+  if (!container) {
+    return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
+  }
+
+  if (action === 'request') {
+    const kind = tokens[1]?.toLowerCase();
+    const target = tokens[2];
+    const summary = tokens.slice(3).join(' ');
+    if (!isPermissionRequestKind(kind)) {
+      return { ok: false, output: `Unknown permission request kind: ${tokens[1] ?? ''}` };
+    }
+    const sanitizedSummary = normalizePermissionCommandText(summary);
+    if (!target || !sanitizedSummary) {
+      return { ok: false, output: 'Usage: /zerg permission request <kind> <target> <summary...>' };
+    }
+
+    const queued = enqueuePermissionRequest(container.read(), {
+      kind,
+      targetId: target,
+      requester: 'operator',
+      summary: sanitizedSummary,
+    }, { now: options.now ?? (() => new Date()) });
+    const next = container.replace(queued);
+    if (options.syncSharedState) {
+      replaceSharedZergState(next);
+    }
+    const requestId = getPermissionQueueState(next).lastRequestId;
+    return { ok: true, output: `permission request queued: ${requestId}` };
+  }
+
+  if (action === 'approve' || action === 'deny' || action === 'cancel') {
+    const requestId = tokens[1];
+    const reason = tokens.slice(2).join(' ');
+    if (!requestId) {
+      return { ok: false, output: `Usage: /zerg permission ${action} <id> [reason...]` };
+    }
+
+    const current = container.read();
+    const request = getPermissionQueueState(current).requests.find((candidate) => candidate.id === requestId);
+    if (!request) {
+      return { ok: false, output: `Unknown permission request: ${requestId}` };
+    }
+    if (request.status !== 'pending') {
+      return { ok: false, output: `Permission request ${requestId} is already ${request.status}.` };
+    }
+
+    const decision = permissionDecisionForAction(action);
+    const resolved = resolvePermissionRequest(current, requestId, decision, {
+      now: options.now ?? (() => new Date()),
+      reason,
+      resolvedBy: 'operator',
+    });
+    const next = container.replace(resolved);
+    if (options.syncSharedState) {
+      replaceSharedZergState(next);
+    }
+    return { ok: true, output: `permission request ${requestId} ${permissionPastTense(decision)}` };
+  }
+
+  return { ok: false, output: `Unknown permission action: ${tokens[0] ?? ''}` };
+}
+
 function dispatchRunCommand(
   stateOrReader: ZergStateSource,
   payload: string,
@@ -567,15 +653,6 @@ function dispatchRunCommand(
   }
 
   const current = container.read();
-  if (current.mode.readOnly) {
-    return { ok: false, output: 'zerg run is blocked while read-only is enabled. Use /zerg control readonly off to allow subagent control.' };
-  }
-
-  const adapter = options.subagentAdapter;
-  if (!adapter || adapter.kind === 'unavailable') {
-    return { ok: false, output: 'No Pi subagent adapter is available. Load pi-subagents or provide a ZergSubagentControlAdapter.' };
-  }
-
   const parsed = parseRunCommand(payload);
   if (!parsed.ok) {
     return parsed;
@@ -586,6 +663,37 @@ function dispatchRunCommand(
   const resolvedDefinition = definitions.length > 0 ? getAgentDefinition(current, parsed.request.agent) : undefined;
   if (definitions.length > 0 && !resolvedDefinition) {
     return { ok: false, output: `Unknown agent definition: ${parsed.request.agent}` };
+  }
+
+  if (current.mode.readOnly) {
+    const queued = enqueuePermissionRequest(current, {
+      kind: 'run',
+      targetId: resolvedDefinition?.id ?? parsed.request.agent,
+      agentId: resolvedDefinition?.id ?? parsed.request.agent,
+      requester: 'operator',
+      summary: `Run ${resolvedDefinition?.id ?? parsed.request.agent}: ${parsed.request.task}`,
+      details: `read-only blocked /zerg run (${launchMode})`,
+      metadata: {
+        agent: resolvedDefinition?.id ?? parsed.request.agent,
+        task: parsed.request.task,
+        launchMode,
+        background: parsed.request.background,
+      },
+    }, { now: options.now ?? (() => new Date()) });
+    const snapshot = container.replace(queued);
+    if (options.syncSharedState) {
+      replaceSharedZergState(snapshot);
+    }
+    const requestId = getPermissionQueueState(snapshot).lastRequestId;
+    return {
+      ok: false,
+      output: `zerg run is blocked while read-only is enabled; queued for permission as ${requestId}. Use /zerg permission approve ${requestId} or /zerg permission deny ${requestId}.`,
+    };
+  }
+
+  const adapter = options.subagentAdapter;
+  if (!adapter || adapter.kind === 'unavailable') {
+    return { ok: false, output: 'No Pi subagent adapter is available. Load pi-subagents or provide a ZergSubagentControlAdapter.' };
   }
 
   const now = options.now ?? (() => new Date());
@@ -735,13 +843,46 @@ function dispatchRunsCommand(
   };
 }
 
-function dispatchInterruptCommand(payload: string, options: RuntimeCommandOptions): ZergCommandResult {
+function dispatchInterruptCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
+  const [runId] = tokenizeRuntimePayload(payload);
+  const container = getWritableStateContainer(stateOrReader);
+  const currentSnapshot = container?.read() ?? resolveZergStateSnapshot(stateOrReader);
+
+  if (currentSnapshot.mode.readOnly) {
+    if (!container) {
+      return { ok: false, output: 'zerg interrupt is blocked while read-only is enabled and requires writable zerg state to queue permission.' };
+    }
+
+    const current = currentSnapshot;
+    const targetRunId = runId || getZergControlState(current).activeRunId;
+    const queued = enqueuePermissionRequest(current, {
+      kind: 'interrupt',
+      targetId: targetRunId,
+      runId: targetRunId,
+      requester: 'operator',
+      summary: `Interrupt ${targetRunId ?? 'active run'}`,
+      details: 'read-only blocked /zerg interrupt',
+    }, { now: options.now ?? (() => new Date()) });
+    const snapshot = container.replace(queued);
+    if (options.syncSharedState) {
+      replaceSharedZergState(snapshot);
+    }
+    const requestId = getPermissionQueueState(snapshot).lastRequestId;
+    return {
+      ok: false,
+      output: `zerg interrupt is blocked while read-only is enabled; queued for permission as ${requestId}. Use /zerg permission approve ${requestId} or /zerg permission deny ${requestId}.`,
+    };
+  }
+
   const adapter = options.subagentAdapter;
   if (!adapter || adapter.kind === 'unavailable' || typeof adapter.interrupt !== 'function') {
     return { ok: false, output: 'No interrupt-capable Pi subagent adapter is available.' };
   }
 
-  const [runId] = tokenizeRuntimePayload(payload);
   const result = adapter.interrupt(runId);
   return { ok: result.ok, output: result.message };
 }
@@ -1044,8 +1185,37 @@ function tokenizeRuntimePayload(payload: string): string[] {
   return tokens;
 }
 
+function normalizePermissionCommandText(input: string): string {
+  return input
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function isRuntimeAction(value: string | undefined): value is ZergRuntimeTransitionAction {
   return value === 'create' || value === 'start' || value === 'progress' || value === 'stop' || value === 'fail' || value === 'reset';
+}
+
+function isPermissionRequestKind(value: string | undefined): value is ZergPermissionRequestKind {
+  return value === 'run' || value === 'interrupt' || value === 'tool' || value === 'mode' || value === 'intervention' || value === 'adapter';
+}
+
+function isPermissionListFilter(value: string): value is 'all' | 'pending' | 'resolved' {
+  return value === 'all' || value === 'pending' || value === 'resolved';
+}
+
+function permissionDecisionForAction(action: 'approve' | 'deny' | 'cancel'): ZergPermissionDecision {
+  return action === 'approve' ? 'approve' : action === 'deny' ? 'deny' : 'cancel';
+}
+
+function permissionPastTense(decision: ZergPermissionDecision): string {
+  return decision === 'approve'
+    ? 'approved'
+    : decision === 'deny'
+      ? 'denied'
+      : decision === 'cancel'
+        ? 'cancelled'
+        : 'expired';
 }
 
 function resolveAvailableRuns(
@@ -1234,11 +1404,14 @@ function renderZergControlStatus(state: ZergState, width: number): string {
   const control = getZergControlState(state);
   const readOnly = state.mode.readOnly ? 'enabled' : 'disabled';
   const latestAudit = control.auditLog?.at(-1)?.message ?? 'none';
+  const permissionQueue = getPermissionQueueState(state);
+  const latestPermission = getPendingPermissionRequests(state).at(-1);
   return [
     'zerg control',
     `controller: ${control.controller}`,
     `mode: ${state.mode.automation}`,
     `read-only: ${readOnly}`,
+    `permissions: ${permissionQueue.pendingCount} pending${latestPermission ? ` latest:${latestPermission.id} ${latestPermission.kind} ${latestPermission.summary}` : ''}`,
     `selected target: ${control.selectedTargetId ?? 'none'}`,
     `active run: ${control.activeRunId ?? 'none'}`,
     `adapter: Pi slash bridge when available; commands /zerg run and /zerg interrupt`,
@@ -1628,6 +1801,8 @@ function renderZergConfigOverlay(
     lines.push(`  controller: ${control.controller} (command: /zerg control controller pi|zerg|operator)`);
     lines.push(`  automation: ${state.mode.automation} (keys: m manual, a assisted, u automatic)`);
     lines.push(`  read-only: ${state.mode.readOnly ? 'enabled' : 'disabled'} (key: r)`);
+    const latestPermission = getPendingPermissionRequests(state).at(-1);
+    lines.push(`  permissions: ${getPermissionQueueState(state).pendingCount} pending${latestPermission ? ` latest:${latestPermission.id} ${latestPermission.kind} ${latestPermission.summary}` : ''} (command: /zerg permission status)`);
     lines.push('  Pi adapter: /zerg run emits pi-subagents slash bridge events when available');
     lines.push('  zerg adapter: command and overlay controls share the same adapter boundary');
   }

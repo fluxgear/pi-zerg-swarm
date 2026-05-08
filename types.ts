@@ -17,6 +17,11 @@ export type ZergTreeNodeKind = 'agent' | 'task' | 'team';
 export type ZergLifecycleState = 'initializing' | 'ready' | 'resetting' | 'disposed';
 export type ZergAgentDefinitionSource = 'builtin' | 'project' | 'user' | 'runtime';
 export type ZergSubagentLaunchMode = 'fresh' | 'fork';
+export type ZergPermissionRequestStatus = 'pending' | 'approved' | 'denied' | 'cancelled' | 'expired';
+export type ZergPermissionDecision = 'approve' | 'deny' | 'cancel' | 'expire';
+export type ZergPermissionRequestKind = 'run' | 'interrupt' | 'tool' | 'mode' | 'intervention' | 'adapter';
+export type ZergPermissionRequester = 'operator' | 'pi' | 'zerg' | 'adapter';
+export type ZergPermissionResolver = 'operator' | 'pi' | 'zerg';
 export const ZERG_STATE_SCHEMA_VERSION = '0.2.0' as const;
 export type ZergStateSchemaVersion = typeof ZERG_STATE_SCHEMA_VERSION;
 
@@ -93,6 +98,31 @@ export interface ZergSubagentRunSnapshot {
   startedAt?: string;
   updatedAt?: string;
   metadata?: ZergExtensionFields;
+}
+
+export interface ZergPermissionRequest {
+  id: string;
+  kind: ZergPermissionRequestKind;
+  status: ZergPermissionRequestStatus;
+  targetId?: string;
+  agentId?: string;
+  runId?: string;
+  requester: ZergPermissionRequester;
+  summary: string;
+  details?: string;
+  createdAt: string;
+  expiresAt?: string;
+  resolvedAt?: string;
+  resolvedBy?: ZergPermissionResolver;
+  decisionReason?: string;
+  metadata?: ZergExtensionFields;
+}
+
+export interface ZergPermissionQueueState {
+  requests: ZergPermissionRequest[];
+  maxRequests: number;
+  lastRequestId?: string;
+  pendingCount: number;
 }
 
 export interface ZergSubagentControlAdapter {

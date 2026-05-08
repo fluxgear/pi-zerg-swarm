@@ -7,6 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-rc.7] - 2026-05-08
+
+### Added
+
+- Added typed command-host permission queue contracts for `ZergPermissionRequest`, request status/decision/kind values, and queue snapshots under `state.extensions.zergPermissions`.
+- Added immutable permission queue helpers for enqueueing, resolving, expiring, listing pending requests, bounded trimming, sanitization, and clone-safe snapshots.
+- Added `/zerg permission status|list|request|approve|deny|cancel` commands for local operator-visible approval audit flow.
+- Added read-only `/zerg run` and `/zerg interrupt` gating that records permission requests or blocks adapter side effects instead of launching/cancelling.
+- Added permission queue indicators to status, control, monitor, config, help, and list rendering.
+- Added regression coverage for queue helpers, command behavior, read-only adapter gating, sanitization, clone isolation, and rendering surfaces.
+
+### Changed
+
+- Kept approval/denial/cancel decisions as audit-only state transitions; approved queued requests do not auto-execute adapter actions in this milestone.
+- Bumped package manifest versions from `1.0.0-rc.6` to `1.0.0-rc.7` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, and matching tests from `v1.0.0-rc.6` to `v1.0.0-rc.7`.
+
+### Known Limitations
+
+- External Pi permission event integration is deferred because exact event names and payloads were not verified; M5 is command-host/local queue only.
+- Approved queued requests are not automatically executed; operator execution remains a future milestone.
+- Permission queues are in-memory state extension data and are not persisted to disk.
+
 ## [1.0.0-rc.6] - 2026-05-08
 
 ### Added
