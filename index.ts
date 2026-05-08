@@ -1,12 +1,18 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
 import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderStatusLine, renderZergSubagentRunList, renderZergSubagentRunSummary } from './render.js';
-import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, getAgentDefinition, getAgentDefinitions, getSubagentRunSnapshot, getSubagentRunSnapshots, readSharedZergState, replaceSharedZergState, seedBuiltinAgentDefinitions, snapshotZergState } from './state.js';
+import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, getAgentDefinition, getAgentDefinitions, getSubagentRunSnapshot, getSubagentRunSnapshots, readSharedZergState, replaceSharedZergState, seedBuiltinAgentDefinitions, snapshotZergState, upsertTask } from './state.js';
 import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
+
+type ZergIdFactory = {
+  runId?: () => string;
+  taskId?: () => string;
+};
 
 export interface ZergCommandHandlerOptions {
   now?: () => Date;
   subagentAdapter?: ZergSubagentControlAdapter;
+  idFactory?: ZergIdFactory;
 }
 
 type RuntimeCommandOptions = ZergCommandHandlerOptions & { syncSharedState?: boolean };
@@ -57,6 +63,13 @@ const SLASH_SUBAGENT_STARTED_EVENT = 'subagent:slash:started';
 const SLASH_SUBAGENT_RESPONSE_EVENT = 'subagent:slash:response';
 const SLASH_SUBAGENT_UPDATE_EVENT = 'subagent:slash:update';
 const SLASH_SUBAGENT_CANCEL_EVENT = 'subagent:slash:cancel';
+const DEFAULT_RUN_ID_PREFIX = 'zerg-';
+const DEFAULT_TASK_ID_PREFIX = 'task-';
+
+const defaultIdFactory: Required<ZergIdFactory> = {
+  runId: () => `${DEFAULT_RUN_ID_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+  taskId: () => `${DEFAULT_TASK_ID_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+};
 
 
 interface NormalizedZergCommandInput {
@@ -135,8 +148,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.4 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.4 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.5 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.5 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -548,7 +561,12 @@ function dispatchRunCommand(
   payload: string,
   options: RuntimeCommandOptions,
 ): ZergCommandResult {
-  const current = resolveZergStateSnapshot(stateOrReader);
+  const container = getWritableStateContainer(stateOrReader);
+  if (!container) {
+    return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
+  }
+
+  const current = container.read();
   if (current.mode.readOnly) {
     return { ok: false, output: 'zerg run is blocked while read-only is enabled. Use /zerg control readonly off to allow subagent control.' };
   }
@@ -563,8 +581,114 @@ function dispatchRunCommand(
     return parsed;
   }
 
-  const result = adapter.launch(parsed.request);
-  return { ok: result.ok, output: result.message };
+  const definitions = getAgentDefinitions(current);
+  const resolvedDefinition = definitions.length > 0 ? getAgentDefinition(current, parsed.request.agent) : undefined;
+  if (definitions.length > 0 && !resolvedDefinition) {
+    return { ok: false, output: `Unknown agent definition: ${parsed.request.agent}` };
+  }
+
+  const now = options.now ?? (() => new Date());
+  const nowTimestamp = now().toISOString();
+  const runId = resolveRunId(options.idFactory);
+  const taskId = resolveTaskId(options.idFactory);
+  const resolvedAgentId = resolvedDefinition?.id ?? parsed.request.agent;
+  const resolvedAgentLabel = resolvedDefinition?.label ?? parsed.request.agent;
+
+  const request: ZergSubagentLaunchRequest = {
+    ...parsed.request,
+    agent: resolvedAgentId,
+    runId,
+    taskId,
+    agentDefinitionId: resolvedDefinition?.id,
+    description: parsed.request.task,
+  };
+
+  const launchMetadata = {
+    taskId,
+    runId,
+    ...(resolvedDefinition ? { agentDefinitionId: resolvedDefinition.id } : {}),
+    agentDefinitionLabel: resolvedDefinition?.label,
+  } as const;
+
+  const taskRecord = {
+    id: taskId,
+    title: parsed.request.task,
+    status: 'running' as const,
+    ownerAgentId: runId,
+    updatedAt: nowTimestamp,
+    metadata: launchMetadata,
+  };
+
+  const withTask = upsertTask(current, taskRecord);
+  const withRun = applyRuntimeTransition(withTask, {
+    entity: 'agent',
+    action: 'create',
+    id: runId,
+    label: resolvedAgentLabel,
+    kind: 'subagent',
+    activity: parsed.request.task,
+  }, { now: () => new Date(nowTimestamp) });
+
+  const withAgentMetadata = {
+    ...withRun,
+    agents: {
+      ...withRun.agents,
+      [runId]: {
+        ...(withRun.agents[runId] ?? {}),
+        metadata: {
+          ...withRun.agents[runId]?.metadata,
+          ...launchMetadata,
+        },
+      },
+    },
+  };
+
+  const launchReadyState = container.replace(withAgentMetadata);
+  if (options.syncSharedState) {
+    replaceSharedZergState(launchReadyState);
+  }
+
+  const result = adapter.launch(request);
+
+  if (result.ok) {
+    return {
+      ok: true,
+      runId,
+      taskId,
+      output: appendSpawnIdentifiers(result.message, runId, taskId),
+    };
+  }
+
+  const withFailure = upsertTask(
+    applyRuntimeTransition(container.read(), {
+      entity: 'agent',
+      action: 'fail',
+      id: runId,
+      label: resolvedAgentLabel,
+      kind: 'subagent',
+      activity: result.message || 'adapter launch failed',
+    }, { now: () => new Date(nowTimestamp) }),
+    {
+      id: taskId,
+      title: parsed.request.task,
+      status: 'failed',
+      ownerAgentId: runId,
+      updatedAt: nowTimestamp,
+      metadata: launchMetadata,
+    },
+  );
+
+  const failedState = container.replace(withFailure);
+  if (options.syncSharedState) {
+    replaceSharedZergState(failedState);
+  }
+
+  return {
+    ok: false,
+    runId,
+    taskId,
+    output: appendSpawnIdentifiers(result.message, runId, taskId),
+  };
 }
 
 function dispatchRunsCommand(
@@ -820,6 +944,39 @@ function normalizeInterventionText(input: string, maxLength = MAX_INTERVENTION_M
   return sanitized;
 }
 
+
+function resolveRunId(idFactory?: ZergIdFactory): string {
+  const generator = idFactory?.runId ?? defaultIdFactory.runId;
+  const candidate = generator();
+  return sanitizeSpawnId(candidate, DEFAULT_RUN_ID_PREFIX);
+}
+
+function resolveTaskId(idFactory?: ZergIdFactory): string {
+  const generator = idFactory?.taskId ?? defaultIdFactory.taskId;
+  const candidate = generator();
+  return sanitizeSpawnId(candidate, DEFAULT_TASK_ID_PREFIX);
+}
+
+function sanitizeSpawnId(value: string, prefix: string): string {
+  const safe = value.trim().replace(/\s+/g, '-');
+  const base = safe.replace(/[^a-zA-Z0-9._-]/g, '-');
+  const normalized = `${base}`.replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  if (normalized.length === 0) {
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+  return normalized.startsWith(prefix) ? normalized : `${prefix}-${normalized}`;
+}
+
+function appendSpawnIdentifiers(message: string, runId: string, taskId: string): string {
+  const includesRun = message.includes(runId);
+  const includesTask = message.includes(taskId);
+  if (includesRun && includesTask) {
+    return message;
+  }
+
+  const suffix = `${includesRun ? '' : ` (${runId})`} ${includesTask ? '' : `task:${taskId}`}`.trim();
+  return `${message}${suffix ? ` ${suffix}` : ''}`;
+}
 
 function parseRuntimeTransition(entity: ZergRuntimeEntity, payload: string): RuntimeParseResult {
   const [actionToken, id, ...rest] = tokenizeRuntimePayload(payload);
@@ -1083,6 +1240,20 @@ function createPiSlashBridgeAdapter(
   const runsById = new Map<string, PendingRun>();
   const resolveTimestamp = () => (options.now ?? (() => new Date()))().toISOString();
 
+  const resolveTaskIdFromRun = (request: ZergSubagentLaunchRequest): string | undefined => {
+    return typeof request.taskId === 'string' && request.taskId.length > 0 ? request.taskId : undefined;
+  };
+
+  const resolveLaunchMetadata = (request: ZergSubagentLaunchRequest, taskId: string | undefined) => {
+    const metadata = {
+      ...(taskId ? { taskId } : {}),
+      ...(request.agentDefinitionId ? { agentDefinitionId: request.agentDefinitionId } : {}),
+      ...(request.description ? { description: request.description } : {}),
+    };
+
+    return Object.keys(metadata).length > 0 ? metadata : undefined;
+  };
+
   const refreshRun = (runId: string): ZergSubagentRunSnapshot | undefined => {
     const stateRun = getSubagentRunSnapshot(container.read(), runId);
     const pending = runsById.get(runId);
@@ -1118,6 +1289,11 @@ function createPiSlashBridgeAdapter(
           task: pending.task ?? existing.task,
           agentId: pending.agentId ?? existing.agentId,
           agentLabel: pending.agentLabel ?? existing.agentLabel,
+          metadata: {
+            ...existing.metadata,
+            ...pending.metadata,
+          },
+          taskId: pending.taskId ?? existing.taskId,
           updatedAt: existing.updatedAt ?? pending.updatedAt,
           startedAt: existing.startedAt ?? pending.startedAt,
         }));
@@ -1233,10 +1409,14 @@ function createPiSlashBridgeAdapter(
       return refreshRun(runId);
     },
     launch(request) {
-      const requestId = `zerg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const requestId = request.runId
+        ?? `zerg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const now = resolveTimestamp();
       const selectedDefinition = getAgentDefinition(container.read(), request.agent);
       const agentLabel = selectedDefinition?.label;
+      const taskId = resolveTaskIdFromRun(request);
+      const launchMetadata = resolveLaunchMetadata(request, taskId);
+      const hasExistingRun = container.read().agents[requestId] !== undefined;
 
       runsById.set(requestId, {
         runId: requestId,
@@ -1244,28 +1424,70 @@ function createPiSlashBridgeAdapter(
         agentLabel,
         task: request.task,
         status: 'idle',
+        taskId,
         updatedAt: now,
         startedAt: undefined,
+        metadata: launchMetadata,
         launched: false,
         started: false,
         completed: false,
       });
 
-      const before = applyRuntimeTransition(container.read(), {
-        entity: 'agent',
-        action: 'create',
-        id: requestId,
-        label: agentLabel ?? request.agent,
-        kind: 'subagent',
-        activity: request.task,
-      }, { now: options.now ?? (() => new Date()) });
-      container.replace(before);
+      if (!hasExistingRun) {
+        const before = applyRuntimeTransition(container.read(), {
+          entity: 'agent',
+          action: 'create',
+          id: requestId,
+          label: agentLabel ?? request.agent,
+          kind: 'subagent',
+          activity: request.task,
+        }, { now: options.now ?? (() => new Date()) });
+
+        const created = before.agents[requestId];
+        if (created && launchMetadata) {
+          container.replace({
+            ...before,
+            agents: {
+              ...before.agents,
+              [requestId]: {
+                ...created,
+                metadata: {
+                  ...created.metadata,
+                  ...launchMetadata,
+                },
+              },
+            },
+          });
+        } else {
+          container.replace(before);
+        }
+      } else {
+        const existing = container.read().agents[requestId];
+        if (existing) {
+          container.replace({
+            ...container.read(),
+            agents: {
+              ...container.read().agents,
+              [requestId]: {
+                ...existing,
+                metadata: {
+                  ...existing.metadata,
+                  ...launchMetadata,
+                },
+              },
+            },
+          });
+        }
+      }
 
       events.emit!(SLASH_SUBAGENT_REQUEST_EVENT, {
         requestId,
         params: {
           agent: request.agent,
           task: request.task,
+          taskId,
+          agentDefinitionId: request.agentDefinitionId,
+          description: request.description,
           clarify: false,
           agentScope: 'both',
           ...(request.background ? { async: true } : {}),
@@ -1275,26 +1497,33 @@ function createPiSlashBridgeAdapter(
 
       const run = runsById.get(requestId);
       if (!run) {
-        return { ok: false, runId: requestId, message: `failed to initialize zerg run ${requestId}` };
+        return { ok: false, runId: requestId, taskId, message: `failed to initialize zerg run ${requestId}` };
       }
 
       if (!run.started) {
         runsById.delete(requestId);
-        const failed = applyRuntimeTransition(container.read(), {
-          entity: 'agent',
-          action: 'fail',
-          id: requestId,
-          label: request.agent,
-          kind: 'subagent',
-          activity: 'No pi-subagents slash bridge responded.',
-        }, { now: options.now ?? (() => new Date()) });
-        container.replace(failed);
-        return { ok: false, runId: requestId, message: 'No pi-subagents slash bridge responded. Ensure pi-subagents is loaded.' };
+        if (!hasExistingRun) {
+          const failed = applyRuntimeTransition(container.read(), {
+            entity: 'agent',
+            action: 'fail',
+            id: requestId,
+            label: request.agent,
+            kind: 'subagent',
+            activity: 'No pi-subagents slash bridge responded.',
+          }, { now: options.now ?? (() => new Date()) });
+          container.replace(failed);
+        }
+        return {
+          ok: false,
+          runId: requestId,
+          taskId,
+          message: 'No pi-subagents slash bridge responded. Ensure pi-subagents is loaded.',
+        };
       }
 
       run.launched = true;
       updateZergControlState(container, { activeRunId: requestId }, `launched ${request.agent}`, options);
-      return { ok: true, runId: requestId, message: `zerg launched ${request.agent} as ${requestId}` };
+      return { ok: true, runId: requestId, taskId, message: `zerg launched ${request.agent} as ${requestId}` };
     },
     interrupt(runId) {
       const target = runId || getZergControlState(container.read()).activeRunId;

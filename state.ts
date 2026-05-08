@@ -756,13 +756,19 @@ function cloneSubagentRunSnapshot(run: ZergSubagentRunSnapshot): ZergSubagentRun
 }
 
 function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
+  const runtimeTask = agent.runtime?.lastActivity;
+  const metadata = agent.metadata;
+  const taskId = typeof metadata?.taskId === 'string' ? metadata.taskId : undefined;
   return {
     runId: agent.id,
     agentId: agent.label || agent.id,
+    agentLabel: agent.label,
     status: agent.status || 'unknown',
-    task: agent.runtime?.lastActivity,
+    task: runtimeTask,
+    taskId,
     startedAt: agent.runtime?.startedAt,
     updatedAt: agent.runtime?.updatedAt,
+    metadata: cloneOptional(metadata, cloneExtensionFields),
   };
 }
 

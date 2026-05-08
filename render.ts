@@ -60,7 +60,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
     : ' | no active intervention';
 
   return fit(
-    `zerg v1.0.0-rc.4 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
+    `zerg v1.0.0-rc.5 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
     options.width,
   );
 }
@@ -292,7 +292,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.4 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0-rc.5 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
@@ -356,8 +356,9 @@ export function renderZergSubagentRunList(runs: readonly ZergSubagentRunSnapshot
   for (const run of runs) {
     const task = run.task ? ` task:${run.task}` : '';
     const label = run.agentLabel ? ` label:${run.agentLabel}` : '';
+    const taskId = run.taskId ? ` task-id:${run.taskId}` : '';
     const startedAt = run.startedAt ? ` started:${run.startedAt}` : '';
-    lines.push(`- ${run.runId} (${run.status}) agent:${run.agentId}${label}${task}${startedAt}`);
+    lines.push(`- ${run.runId} (${run.status}) agent:${run.agentId}${label}${task}${taskId}${startedAt}`);
   }
 
   return lines.map((line) => fit(line, width)).join('\n');
@@ -370,6 +371,7 @@ export function renderZergSubagentRunSummary(run: ZergSubagentRunSnapshot, optio
     `agent: ${run.agentId}`,
     `label: ${run.agentLabel ?? 'unknown'}`,
     `status: ${run.status}`,
+    ...(run.taskId ? [`task-id: ${run.taskId}`] : []),
     `task: ${run.task ?? 'none'}`,
     `started-at: ${run.startedAt ?? 'unknown'}`,
     `updated-at: ${run.updatedAt ?? 'unknown'}`,

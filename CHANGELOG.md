@@ -7,6 +7,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-rc.5] - 2026-05-08
+
+### Added
+
+- Added task-first `/zerg run` spawn state that allocates run and task identities before adapter launch.
+- Added launch request/result identity fields for `runId`, `taskId`, agent-definition linkage, and task descriptions.
+- Added regression coverage for deterministic task-first IDs, definition resolution, read-only no-mutation behavior, sync launch failure visibility, Pi slash bridge request ID reuse, and divergent legacy adapter IDs.
+
+### Changed
+
+- Updated Pi slash bridge launch handling to respect provided run IDs and carry task IDs through run snapshots and metadata.
+- Updated `/zerg runs` rendering to show task/run linkage.
+- Bumped package manifest versions from `1.0.0-rc.4` to `1.0.0-rc.5` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, and matching tests from `v1.0.0-rc.4` to `v1.0.0-rc.5`.
+
+### Known Limitations
+
+- Fresh/fork launch-mode semantics, background task output storage, mailbox messaging, and filesystem-defined agents remain future milestones.
+- Live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
+
 ## [1.0.0-rc.4] - 2026-05-07
 
 ### Added

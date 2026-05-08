@@ -66,11 +66,16 @@ export interface ZergSubagentLaunchRequest {
   task: string;
   background?: boolean;
   fork?: boolean;
+  runId?: string;
+  taskId?: string;
+  agentDefinitionId?: string;
+  description?: string;
 }
 
 export interface ZergSubagentControlResult {
   ok: boolean;
   runId?: string;
+  taskId?: string;
   message: string;
 }
 
@@ -338,6 +343,8 @@ export interface ZergThinkingContext {
 export interface ZergCommandResult {
   ok: boolean;
   output: string;
+  runId?: string;
+  taskId?: string;
 }
 
 export interface ZergInternalPatchController {
