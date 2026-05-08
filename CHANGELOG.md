@@ -7,6 +7,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-rc.4] - 2026-05-07
+
+### Added
+
+- Added optional adapter read APIs for agent definitions and subagent run snapshots: `listAgentDefinitions`, `getAgentDefinition`, `listRuns`, and `getRun`.
+- Added clone-safe `ZergSubagentRunSnapshot` contracts and state helpers for run snapshot retrieval.
+- Added read-only `/zerg runs` and `/zerg runs show <run-id>` command output with bounded render helpers and regression coverage.
+
+### Changed
+
+- Bumped package manifest versions from `1.0.0-rc.3` to `1.0.0-rc.4` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, and matching tests from `v1.0.0-rc.3` to `v1.0.0-rc.4`.
+
+### Known Limitations
+
+- Task-first spawn semantics, filesystem-backed agent loading, and hard `/zerg run` definition enforcement remain future milestones.
+- Live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
+
 ## [1.0.0-rc.3] - 2026-05-06
 
 ### Added

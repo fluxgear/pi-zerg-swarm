@@ -74,10 +74,26 @@ export interface ZergSubagentControlResult {
   message: string;
 }
 
+export interface ZergSubagentRunSnapshot {
+  runId: string;
+  agentId: string;
+  agentLabel?: string;
+  task?: string;
+  status: AgentStatus;
+  taskId?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  metadata?: ZergExtensionFields;
+}
+
 export interface ZergSubagentControlAdapter {
   readonly kind: 'pi-slash-bridge' | 'fake' | 'unavailable';
   launch(request: ZergSubagentLaunchRequest): ZergSubagentControlResult;
   interrupt?(runId?: string): ZergSubagentControlResult;
+  listAgentDefinitions?(): readonly ZergAgentDefinition[];
+  getAgentDefinition?(id: string): ZergAgentDefinition | undefined;
+  listRuns?(): readonly ZergSubagentRunSnapshot[];
+  getRun?(runId: string): ZergSubagentRunSnapshot | undefined;
   dispose?(): void;
 }
 

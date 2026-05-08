@@ -1,8 +1,8 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
-import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderStatusLine } from './render.js';
-import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, getAgentDefinition, getAgentDefinitions, readSharedZergState, replaceSharedZergState, seedBuiltinAgentDefinitions, snapshotZergState } from './state.js';
-import { ZERG_COMMANDS, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchRequest } from './types.js';
+import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderStatusLine, renderZergSubagentRunList, renderZergSubagentRunSummary } from './render.js';
+import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, getAgentDefinition, getAgentDefinitions, getSubagentRunSnapshot, getSubagentRunSnapshots, readSharedZergState, replaceSharedZergState, seedBuiltinAgentDefinitions, snapshotZergState } from './state.js';
+import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
 
 export interface ZergCommandHandlerOptions {
   now?: () => Date;
@@ -25,7 +25,7 @@ export interface ZergExtensionRegistration {
   dispose(): void;
 }
 
-type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene' | 'monitor' | 'control' | 'config' | 'run' | 'interrupt' | 'agents';
+type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene' | 'monitor' | 'control' | 'config' | 'run' | 'interrupt' | 'agents' | 'runs';
 type ZergCommandDispatcher = (payload: string) => ZergCommandResult;
 type RuntimeParseResult = { ok: false; output: string } | { ok: true; transition: ZergRuntimeTransition };
 
@@ -135,8 +135,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.3 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.3 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.4 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.4 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -237,6 +237,7 @@ export function createZergCommandHandler(
     control: (payload: string) => dispatchControlCommand(stateOrReader, payload, options),
     config: () => ({ ok: true, output: renderZergConfigOverlay(resolveZergStateSnapshot(stateOrReader), { width: PI_COMMAND_OUTPUT_WIDTH, activeTab: 'config', selectedIndex: 0 }) }),
     run: (payload: string) => dispatchRunCommand(stateOrReader, payload, options),
+    runs: (payload: string) => dispatchRunsCommand(stateOrReader, payload, options),
     interrupt: (payload: string) => dispatchInterruptCommand(payload, options),
   };
 
@@ -296,7 +297,7 @@ function isZergInvocationToken(value: string): value is ZergCommandName {
 }
 
 function isZergCommandTopic(value: string): value is ZergCommandTopic {
-  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agents' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene' || value === 'monitor' || value === 'control' || value === 'config' || value === 'run' || value === 'interrupt';
+  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agents' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene' || value === 'monitor' || value === 'control' || value === 'config' || value === 'run' || value === 'runs' || value === 'interrupt';
 }
 
 function dispatchAgentDefinitionsCommand(
@@ -566,6 +567,46 @@ function dispatchRunCommand(
   return { ok: result.ok, output: result.message };
 }
 
+function dispatchRunsCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
+  const adapter = options.subagentAdapter;
+  const tokens = tokenizeRuntimePayload(payload);
+  const action = tokens[0]?.toLowerCase();
+  const runId = tokens[1];
+  const runs = resolveAvailableRuns(stateOrReader, adapter);
+
+  if (!action || action === 'list' || action === 'ls') {
+    return {
+      ok: true,
+      output: renderZergSubagentRunList(runs, { width: PI_COMMAND_OUTPUT_WIDTH }),
+    };
+  }
+
+  if (action === 'show') {
+    if (!runId) {
+      return { ok: false, output: 'Usage: /zerg runs show <run-id>' };
+    }
+
+    const match = adapter?.getRun?.(runId) ?? getSubagentRunSnapshot(resolveZergStateSnapshot(stateOrReader), runId);
+    if (!match) {
+      return { ok: false, output: `Unknown run: ${runId}` };
+    }
+
+    return {
+      ok: true,
+      output: renderZergSubagentRunSummary(match, { width: PI_COMMAND_OUTPUT_WIDTH }),
+    };
+  }
+
+  return {
+    ok: false,
+    output: `Unknown runs action: ${action}. Available: /zerg runs list | /zerg runs show <run-id>`,
+  };
+}
+
 function dispatchInterruptCommand(payload: string, options: RuntimeCommandOptions): ZergCommandResult {
   const adapter = options.subagentAdapter;
   if (!adapter || adapter.kind === 'unavailable' || typeof adapter.interrupt !== 'function') {
@@ -823,6 +864,31 @@ function isRuntimeAction(value: string | undefined): value is ZergRuntimeTransit
   return value === 'create' || value === 'start' || value === 'progress' || value === 'stop' || value === 'fail' || value === 'reset';
 }
 
+function resolveAvailableRuns(
+  stateOrReader: ZergStateSource,
+  adapter: ZergSubagentControlAdapter | undefined,
+): ZergSubagentRunSnapshot[] {
+  const stateRuns = getSubagentRunSnapshots(resolveZergStateSnapshot(stateOrReader));
+  const runsById = new Map(stateRuns.map((run) => [run.runId, run]));
+  const adapterRuns = typeof adapter?.listRuns === 'function' ? adapter.listRuns() : undefined;
+
+  if (adapterRuns) {
+    for (const run of adapterRuns) {
+      const snapshot = createZergSubagentRunSnapshot(run);
+      const existing = runsById.get(snapshot.runId);
+      runsById.set(snapshot.runId, existing ? createZergSubagentRunSnapshot({ ...existing, ...snapshot }) : snapshot);
+    }
+  }
+
+  return [...runsById.values()]
+    .map((run) => createZergSubagentRunSnapshot(run))
+    .sort((left, right) => {
+      const leftTimestamp = left.startedAt ?? left.updatedAt ?? '';
+      const rightTimestamp = right.startedAt ?? right.updatedAt ?? '';
+      return rightTimestamp.localeCompare(leftTimestamp) || left.runId.localeCompare(right.runId);
+    });
+}
+
 function getWritableStateContainer(stateOrReader: ZergStateSource): ZergStateContainer | undefined {
   return isZergStateContainer(stateOrReader) ? stateOrReader : undefined;
 }
@@ -1006,51 +1072,195 @@ function createPiSlashBridgeAdapter(
     return {
       kind: 'unavailable',
       launch: () => ({ ok: false, message: 'Pi event bus is unavailable for subagent control.' }),
+      listAgentDefinitions: () => [],
+      getAgentDefinition: () => undefined,
+      listRuns: () => [],
+      getRun: () => undefined,
     };
   }
 
-  const pending = new Map<string, { started: boolean; completed: boolean; launched: boolean; agent: string; task: string }>();
+  type PendingRun = ZergSubagentRunSnapshot & { launched: boolean; started: boolean; completed: boolean };
+  const runsById = new Map<string, PendingRun>();
+  const resolveTimestamp = () => (options.now ?? (() => new Date()))().toISOString();
+
+  const refreshRun = (runId: string): ZergSubagentRunSnapshot | undefined => {
+    const stateRun = getSubagentRunSnapshot(container.read(), runId);
+    const pending = runsById.get(runId);
+
+    if (!stateRun) {
+      return pending ? createZergSubagentRunSnapshot(pending) : undefined;
+    }
+
+    return createZergSubagentRunSnapshot({
+      ...stateRun,
+      ...pending,
+      task: pending?.task ?? stateRun.task,
+      agentId: pending?.agentId ?? stateRun.agentId,
+      agentLabel: pending?.agentLabel ?? stateRun.agentLabel,
+    });
+  };
+
+  const resolveRuns = (): ZergSubagentRunSnapshot[] => {
+    const stateRuns = getSubagentRunSnapshots(container.read());
+    const merged = new Map<string, ZergSubagentRunSnapshot>();
+
+    for (const stateRun of stateRuns) {
+      merged.set(stateRun.runId, createZergSubagentRunSnapshot(stateRun));
+    }
+
+    for (const [runId, pending] of runsById) {
+      const existing = merged.get(runId);
+      if (existing) {
+        merged.set(runId, createZergSubagentRunSnapshot({
+          ...existing,
+          ...pending,
+          status: existing.status ?? pending.status,
+          task: pending.task ?? existing.task,
+          agentId: pending.agentId ?? existing.agentId,
+          agentLabel: pending.agentLabel ?? existing.agentLabel,
+          updatedAt: existing.updatedAt ?? pending.updatedAt,
+          startedAt: existing.startedAt ?? pending.startedAt,
+        }));
+      } else {
+        merged.set(runId, createZergSubagentRunSnapshot(pending));
+      }
+    }
+
+    return [...merged.values()].sort((left, right) => {
+      const leftTimestamp = left.updatedAt ?? left.startedAt ?? '';
+      const rightTimestamp = right.updatedAt ?? right.startedAt ?? '';
+      return rightTimestamp.localeCompare(leftTimestamp) || left.runId.localeCompare(right.runId);
+    });
+  };
+
+  const updatePendingRun = (runId: string, status?: AgentStatus, eventTimestamp = resolveTimestamp(), activity?: string): void => {
+    const pending = runsById.get(runId);
+    if (!pending) {
+      return;
+    }
+
+    pending.updatedAt = eventTimestamp;
+    if (status) {
+      pending.status = status;
+    }
+
+    if (status === 'running' && !pending.startedAt) {
+      pending.startedAt = eventTimestamp;
+    }
+
+    if (activity) {
+      pending.task ||= activity;
+    }
+  };
+
   const disposers = [
     subscribePiEvent(events, SLASH_SUBAGENT_STARTED_EVENT, (data) => {
       const requestId = getEventRequestId(data);
       if (!requestId) return;
-      const run = pending.get(requestId);
-      if (run) run.started = true;
+
+      const pending = runsById.get(requestId);
+      if (pending) {
+        pending.started = true;
+      }
+
+      updatePendingRun(requestId, 'running', resolveTimestamp(), getSubagentRunSnapshot(container.read(), requestId)?.task);
       const snapshot = updateZergControlState(container, { activeRunId: requestId }, `subagent ${requestId} started`, options);
-      container.replace(applyRuntimeTransition(snapshot, { entity: 'agent', action: 'start', id: requestId, label: run?.agent ?? requestId, kind: 'subagent', activity: run?.task }, { now: options.now ?? (() => new Date()) }));
+      container.replace(applyRuntimeTransition(snapshot, {
+        entity: 'agent',
+        action: 'start',
+        id: requestId,
+        label: pending?.agentLabel ?? pending?.agentId ?? requestId,
+        kind: 'subagent',
+        activity: pending?.task,
+      }, { now: options.now ?? (() => new Date()) }));
     }),
     subscribePiEvent(events, SLASH_SUBAGENT_UPDATE_EVENT, (data) => {
       const requestId = getEventRequestId(data);
       if (!requestId) return;
+
       const currentTool = data && typeof data === 'object' && typeof (data as { currentTool?: unknown }).currentTool === 'string'
         ? (data as { currentTool: string }).currentTool
         : 'progress';
-      const snapshot = applyRuntimeTransition(container.read(), { entity: 'agent', action: 'progress', id: requestId, kind: 'subagent', activity: currentTool }, { now: options.now ?? (() => new Date()) });
+      updatePendingRun(requestId, 'running', resolveTimestamp(), currentTool);
+      const snapshot = applyRuntimeTransition(container.read(), {
+        entity: 'agent',
+        action: 'progress',
+        id: requestId,
+        kind: 'subagent',
+        activity: currentTool,
+      }, { now: options.now ?? (() => new Date()) });
       container.replace(snapshot);
     }),
     subscribePiEvent(events, SLASH_SUBAGENT_RESPONSE_EVENT, (data) => {
       const requestId = getEventRequestId(data);
       if (!requestId) return;
+
       const isError = data && typeof data === 'object' && (data as { isError?: unknown }).isError === true;
-      const run = pending.get(requestId);
-      if (run) {
-        run.completed = true;
+      const status: AgentStatus = isError ? 'failed' : 'done';
+      const pending = runsById.get(requestId);
+      if (pending) {
+        pending.completed = true;
+        updatePendingRun(requestId, status, resolveTimestamp(), isError ? 'subagent failed' : 'subagent complete');
       }
-      const snapshot = applyRuntimeTransition(container.read(), { entity: 'agent', action: isError ? 'fail' : 'stop', id: requestId, label: run?.agent ?? requestId, kind: 'subagent', activity: isError ? 'subagent failed' : 'subagent complete' }, { now: options.now ?? (() => new Date()) });
+
+      const snapshot = applyRuntimeTransition(container.read(), {
+        entity: 'agent',
+        action: isError ? 'fail' : 'stop',
+        id: requestId,
+        label: pending?.agentId ?? requestId,
+        kind: 'subagent',
+        activity: isError ? 'subagent failed' : 'subagent complete',
+      }, { now: options.now ?? (() => new Date()) });
       container.replace(snapshot);
-      if (run?.launched) {
-        pending.delete(requestId);
+      if (pending?.launched) {
+        runsById.delete(requestId);
       }
     }),
   ];
 
   return {
     kind: 'pi-slash-bridge',
+    listAgentDefinitions() {
+      return getAgentDefinitions(container.read());
+    },
+    getAgentDefinition(id) {
+      return getAgentDefinition(container.read(), id);
+    },
+    listRuns() {
+      return resolveRuns().map((run) => createZergSubagentRunSnapshot(run));
+    },
+    getRun(runId) {
+      return refreshRun(runId);
+    },
     launch(request) {
       const requestId = `zerg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      pending.set(requestId, { started: false, completed: false, launched: false, agent: request.agent, task: request.task });
-      const before = applyRuntimeTransition(container.read(), { entity: 'agent', action: 'create', id: requestId, label: request.agent, kind: 'subagent', activity: request.task }, { now: options.now ?? (() => new Date()) });
+      const now = resolveTimestamp();
+      const selectedDefinition = getAgentDefinition(container.read(), request.agent);
+      const agentLabel = selectedDefinition?.label;
+
+      runsById.set(requestId, {
+        runId: requestId,
+        agentId: request.agent,
+        agentLabel,
+        task: request.task,
+        status: 'idle',
+        updatedAt: now,
+        startedAt: undefined,
+        launched: false,
+        started: false,
+        completed: false,
+      });
+
+      const before = applyRuntimeTransition(container.read(), {
+        entity: 'agent',
+        action: 'create',
+        id: requestId,
+        label: agentLabel ?? request.agent,
+        kind: 'subagent',
+        activity: request.task,
+      }, { now: options.now ?? (() => new Date()) });
       container.replace(before);
+
       events.emit!(SLASH_SUBAGENT_REQUEST_EVENT, {
         requestId,
         params: {
@@ -1062,18 +1272,28 @@ function createPiSlashBridgeAdapter(
           ...(request.fork ? { context: 'fork' as const } : {}),
         },
       });
-      const run = pending.get(requestId);
-      if (!run?.started) {
-        pending.delete(requestId);
-        const failed = applyRuntimeTransition(container.read(), { entity: 'agent', action: 'fail', id: requestId, label: request.agent, kind: 'subagent', activity: 'No pi-subagents slash bridge responded.' }, { now: options.now ?? (() => new Date()) });
+
+      const run = runsById.get(requestId);
+      if (!run) {
+        return { ok: false, runId: requestId, message: `failed to initialize zerg run ${requestId}` };
+      }
+
+      if (!run.started) {
+        runsById.delete(requestId);
+        const failed = applyRuntimeTransition(container.read(), {
+          entity: 'agent',
+          action: 'fail',
+          id: requestId,
+          label: request.agent,
+          kind: 'subagent',
+          activity: 'No pi-subagents slash bridge responded.',
+        }, { now: options.now ?? (() => new Date()) });
         container.replace(failed);
         return { ok: false, runId: requestId, message: 'No pi-subagents slash bridge responded. Ensure pi-subagents is loaded.' };
       }
+
       run.launched = true;
       updateZergControlState(container, { activeRunId: requestId }, `launched ${request.agent}`, options);
-      if (run.completed) {
-        pending.delete(requestId);
-      }
       return { ok: true, runId: requestId, message: `zerg launched ${request.agent} as ${requestId}` };
     },
     interrupt(runId) {
@@ -1087,7 +1307,7 @@ function createPiSlashBridgeAdapter(
     },
     dispose() {
       for (const dispose of disposers) dispose();
-      pending.clear();
+      runsById.clear();
     },
   };
 }

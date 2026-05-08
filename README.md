@@ -3,13 +3,13 @@
 `pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
 
 
-> **v1.0.0-rc.3 release-candidate status**
-> Candidate metadata and release notes include the local agent-definition registry milestone for the RC path.
+> **v1.0.0-rc.4 release-candidate status**
+> Candidate metadata and release notes include the adapter read APIs milestone for the RC path.
 > Runtime capability is otherwise unchanged: live TUI overlays, chat, and external transport remain unimplemented and unvalidated.
 
 ## Release status
 
-- Current candidate: **v1.0.0-rc.3** (release-candidate path with the agent-definition registry milestone included).
+- Current candidate: **v1.0.0-rc.4** (release-candidate path with adapter read APIs included).
 - Historical milestones preserved for audit traceability: v0.8.0 implementation milestone and v0.8.1 audit follow-up patch.
 - Mandatory RC audits for this candidate: `prompts/audit/generalized-deep-audit_v2-0-0.md`, `prompts/audit/milestone-audit_v2-0-0.md`, `prompts/audit/security-audit_v2-0-0.md`, `prompts/audit/performance-audit_v2-0-0.md`, `prompts/audit/hardening-sweep_v2-0-0.md`, and `prompts/audit/themed-cleanup_v2-0-0.md`.
 - Canonical repository metadata is configured for the public repo: https://github.com/fluxgear/pi-zerg-swarm.
@@ -20,8 +20,8 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v1.0.0-rc.3 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, read-only agent-definition registry listing, and agent/team lifecycle monitoring through snapshot-safe shared-state-backed Pi command handlers.
-Command-host control grammar is available via `/zerg mode status|manual|assisted|automatic|revert [reason]`, `/zerg intervene agent|subagent|leader ...`, and `/zerg agents list|show <id>`; live overlay chat/process-transport wiring is still out of scope.
+At v1.0.0-rc.4 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, read-only agent-definition registry listing, adapter-backed run listing, and agent/team lifecycle monitoring through snapshot-safe shared-state-backed Pi command handlers.
+Command-host control grammar is available via `/zerg mode status|manual|assisted|automatic|revert [reason]`, `/zerg intervene agent|subagent|leader ...`, `/zerg agents list|show <id>`, and `/zerg runs list|show <run-id>`; live overlay chat/process-transport wiring is still out of scope.
 
 ## Architecture
 
@@ -92,7 +92,7 @@ npm run check:version
 ```
 `npm run build` performs strict TypeScript no-emit checking. `npm test` runs parser plus command-surface coverage, v0.2.0 state/container behavior, registration snapshot semantics, v0.3.0 thinking-step parser coverage, internal-patch event-bus wrapping/duplicate/rollback/dispose paths, v0.4.1 release-hygiene assertions, v0.5.1 render regressions, v0.6.1 lifecycle/monitoring/shared-state coverage, v0.7.1 mode/intervention coverage, and audit-bugfix/publish-readiness regressions with fake-Pi shared-state parity checks using Node's built-in test runner and `tsx`.
 `npm run check:package` validates MIT/license metadata, package/build private-path guards, package-lock↔package version sync, and repository metadata fields for release discoverability and consistency.
-`npm run check:version` confirms that the package release tag `v1.0.0-rc.3` is at `HEAD` in post-tag state. During explicit pre-tag RC prep, skip this check until the `v1.0.0-rc.3` tag exists at `HEAD`; if run earlier, the failure is expected.
+`npm run check:version` confirms that the package release tag `v1.0.0-rc.4` is at `HEAD` in post-tag state. During explicit pre-tag RC prep, skip this check until the `v1.0.0-rc.4` tag exists at `HEAD`; if run earlier, the failure is expected.
 
 ## Roadmap
 
@@ -110,7 +110,8 @@ npm run check:version
 - v0.8.1: audit bugfix patch for release-surface/version-alignment follow-ups (completed milestone)
 - v0.9.0: release-prep/doc and package-readiness polish (completed)
 - v0.9.1: publication/public repository readiness and check:version doc polish (completed)
-- v1.0.0-rc.3: release-candidate agent-definition registry and metadata finalization (current candidate)
+- v1.0.0-rc.3: release-candidate agent-definition registry and metadata finalization (completed)
+- v1.0.0-rc.4: release-candidate adapter read APIs and run inspection surfaces (current candidate)
 - v1.0.0: stable release after RC sign-off
 - post-v1.0.0: live TUI overlays, chat, and external transport validation
 

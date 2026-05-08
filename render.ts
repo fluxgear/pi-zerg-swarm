@@ -1,4 +1,4 @@
-import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergAgentDefinition, type ZergState, type ZergTreeNode } from './types.js';
+import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergAgentDefinition, type ZergState, type ZergSubagentRunSnapshot, type ZergTreeNode } from './types.js';
 
 export interface RenderOptions {
   width?: number;
@@ -60,7 +60,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
     : ' | no active intervention';
 
   return fit(
-    `zerg v1.0.0-rc.3 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
+    `zerg v1.0.0-rc.4 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
     options.width,
   );
 }
@@ -292,7 +292,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.3 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0-rc.4 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
@@ -302,7 +302,7 @@ export function renderHelp(state: ZergState, options: RenderOptions = {}): strin
     'Control syntax: /zerg control status|controller pi|zerg|operator|readonly on|off|toggle|mode manual|assisted|automatic',
     'Registry syntax: /zerg agents [list] | /zerg agents show <id>',
     'Config syntax: /zerg config opens the Pi overlay configuration window when available',
-    'Run syntax: /zerg run <agent> <task> [--bg] [--fork] | /zerg interrupt [run-id]',
+    'Run syntax: /zerg run <agent> <task> [--bg] [--fork] | /zerg runs [list] | /zerg runs show <run-id> | /zerg interrupt [run-id]',
     'Monitor syntax: /zerg monitor [readonly on|off|toggle|status]',
     'Intervention syntax: /zerg intervene agent <agent-id> <message> | /zerg intervene subagent <agent-id> <message> | /zerg intervene leader <team-id> <message>',
     'Available now: slash-free Pi command registration, aliases, lifecycle state updates, mode/intervention/monitor/control/config commands, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
@@ -339,6 +339,40 @@ export function renderAgentDefinitionSummary(definition: ZergAgentDefinition, op
     `tools: ${definition.tools?.join(', ') || 'default'}`,
     `disallowed-tools: ${definition.disallowedTools?.join(', ') || 'none'}`,
     `permission-mode: ${definition.permissionMode ?? 'inherit'}`,
+  ];
+
+  return lines.map((line) => fit(line, width)).join('\n');
+}
+
+export function renderZergSubagentRunList(runs: readonly ZergSubagentRunSnapshot[], options: RenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+
+  if (runs.length === 0) {
+    return fit('No subagent runs are currently known.', width);
+  }
+
+  const lines = ['subagent runs:'];
+
+  for (const run of runs) {
+    const task = run.task ? ` task:${run.task}` : '';
+    const label = run.agentLabel ? ` label:${run.agentLabel}` : '';
+    const startedAt = run.startedAt ? ` started:${run.startedAt}` : '';
+    lines.push(`- ${run.runId} (${run.status}) agent:${run.agentId}${label}${task}${startedAt}`);
+  }
+
+  return lines.map((line) => fit(line, width)).join('\n');
+}
+
+export function renderZergSubagentRunSummary(run: ZergSubagentRunSnapshot, options: RenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+  const lines = [
+    `subagent run: ${run.runId}`,
+    `agent: ${run.agentId}`,
+    `label: ${run.agentLabel ?? 'unknown'}`,
+    `status: ${run.status}`,
+    `task: ${run.task ?? 'none'}`,
+    `started-at: ${run.startedAt ?? 'unknown'}`,
+    `updated-at: ${run.updatedAt ?? 'unknown'}`,
   ];
 
   return lines.map((line) => fit(line, width)).join('\n');

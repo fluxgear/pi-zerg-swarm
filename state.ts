@@ -1,4 +1,4 @@
-import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentDefinition, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStateListener, type ZergStatePatch, type ZergStateUpdateOptions, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
+import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentDefinition, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStateListener, type ZergStatePatch, type ZergStateUpdateOptions, type ZergSubagentRunSnapshot, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
 
 const DEFAULT_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 
@@ -41,6 +41,20 @@ const BUILTIN_AGENT_DEFINITIONS: Record<string, ZergAgentDefinition> = {
 
 export function createBuiltinAgentDefinitions(): Record<string, ZergAgentDefinition> {
   return cloneAgentDefinitions(BUILTIN_AGENT_DEFINITIONS);
+}
+
+export function createZergSubagentRunSnapshot(run: ZergSubagentRunSnapshot): ZergSubagentRunSnapshot {
+  return {
+    runId: run.runId,
+    agentId: run.agentId,
+    agentLabel: run.agentLabel,
+    task: run.task,
+    status: run.status,
+    taskId: run.taskId,
+    startedAt: run.startedAt,
+    updatedAt: run.updatedAt,
+    metadata: cloneOptional(run.metadata, cloneExtensionFields),
+  };
 }
 
 export function seedBuiltinAgentDefinitions(state: ZergState): ZergState {
@@ -102,6 +116,18 @@ export function getAgentDefinition(state: ZergState, rawId: string): ZergAgentDe
   }
 
   return cloneAgentDefinition(definition);
+}
+
+export function getSubagentRunSnapshots(state: ZergState): ZergSubagentRunSnapshot[] {
+  return Object.values(state.agents)
+    .filter((agent) => isPiSubagentRunAgentId(agent.id))
+    .map((agent) => cloneSubagentRunSnapshot(fromAgentToRunSnapshot(agent)))
+    .sort((left, right) => (right.startedAt ?? '').localeCompare(left.startedAt ?? '') || left.runId.localeCompare(right.runId));
+}
+
+export function getSubagentRunSnapshot(state: ZergState, runId: string): ZergSubagentRunSnapshot | undefined {
+  const run = getSubagentRunById(state, runId);
+  return run ? cloneSubagentRunSnapshot(run) : undefined;
 }
 
 export function upsertAgentDefinition(state: ZergState, definition: ZergAgentDefinition): ZergState {
@@ -705,6 +731,39 @@ function dedupeSortedTools(tools: string[] | undefined): string[] | undefined {
     .sort((left, right) => left.localeCompare(right));
 
   return deduped.length > 0 ? deduped : undefined;
+}
+
+const SUBAGENT_RUN_ID_PREFIX = 'zerg-';
+
+function getSubagentRunById(state: ZergState, runId: string): ZergSubagentRunSnapshot | undefined {
+  const agent = state.agents[runId];
+  if (!agent || !isPiSubagentRunAgentId(agent.id)) {
+    return undefined;
+  }
+
+  return fromAgentToRunSnapshot(agent);
+}
+
+function isPiSubagentRunAgentId(id: string): boolean {
+  return id.startsWith(SUBAGENT_RUN_ID_PREFIX);
+}
+
+function cloneSubagentRunSnapshot(run: ZergSubagentRunSnapshot): ZergSubagentRunSnapshot {
+  return {
+    ...run,
+    metadata: cloneOptional(run.metadata, cloneExtensionFields),
+  };
+}
+
+function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
+  return {
+    runId: agent.id,
+    agentId: agent.label || agent.id,
+    status: agent.status || 'unknown',
+    task: agent.runtime?.lastActivity,
+    startedAt: agent.runtime?.startedAt,
+    updatedAt: agent.runtime?.updatedAt,
+  };
 }
 
 function cloneAgentDefinitions(definitions: Record<string, ZergAgentDefinition> = {}): Record<string, ZergAgentDefinition> {
