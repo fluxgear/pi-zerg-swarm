@@ -16,6 +16,7 @@ export type ZergContextKind = 'command' | 'extension' | 'team' | 'agent' | 'task
 export type ZergTreeNodeKind = 'agent' | 'task' | 'team';
 export type ZergLifecycleState = 'initializing' | 'ready' | 'resetting' | 'disposed';
 export type ZergAgentDefinitionSource = 'builtin' | 'project' | 'user' | 'runtime';
+export type ZergSubagentLaunchMode = 'fresh' | 'fork';
 export const ZERG_STATE_SCHEMA_VERSION = '0.2.0' as const;
 export type ZergStateSchemaVersion = typeof ZERG_STATE_SCHEMA_VERSION;
 
@@ -65,7 +66,9 @@ export interface ZergSubagentLaunchRequest {
   agent: string;
   task: string;
   background?: boolean;
+  /** @deprecated Use launchMode: 'fork' instead. */
   fork?: boolean;
+  launchMode?: ZergSubagentLaunchMode;
   runId?: string;
   taskId?: string;
   agentDefinitionId?: string;
@@ -86,6 +89,7 @@ export interface ZergSubagentRunSnapshot {
   task?: string;
   status: AgentStatus;
   taskId?: string;
+  launchMode?: ZergSubagentLaunchMode;
   startedAt?: string;
   updatedAt?: string;
   metadata?: ZergExtensionFields;

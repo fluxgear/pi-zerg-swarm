@@ -51,6 +51,7 @@ export function createZergSubagentRunSnapshot(run: ZergSubagentRunSnapshot): Zer
     task: run.task,
     status: run.status,
     taskId: run.taskId,
+    launchMode: run.launchMode,
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
     metadata: cloneOptional(run.metadata, cloneExtensionFields),
@@ -759,6 +760,7 @@ function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
   const runtimeTask = agent.runtime?.lastActivity;
   const metadata = agent.metadata;
   const taskId = typeof metadata?.taskId === 'string' ? metadata.taskId : undefined;
+  const launchMode = metadata?.launchMode === 'fork' || metadata?.launchMode === 'fresh' ? metadata.launchMode : undefined;
   return {
     runId: agent.id,
     agentId: agent.label || agent.id,
@@ -766,6 +768,7 @@ function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
     status: agent.status || 'unknown',
     task: runtimeTask,
     taskId,
+    launchMode,
     startedAt: agent.runtime?.startedAt,
     updatedAt: agent.runtime?.updatedAt,
     metadata: cloneOptional(metadata, cloneExtensionFields),

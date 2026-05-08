@@ -60,7 +60,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
     : ' | no active intervention';
 
   return fit(
-    `zerg v1.0.0-rc.5 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
+    `zerg v1.0.0-rc.6 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${activeIntervention}`,
     options.width,
   );
 }
@@ -292,7 +292,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.5 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0-rc.6 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
@@ -302,7 +302,7 @@ export function renderHelp(state: ZergState, options: RenderOptions = {}): strin
     'Control syntax: /zerg control status|controller pi|zerg|operator|readonly on|off|toggle|mode manual|assisted|automatic',
     'Registry syntax: /zerg agents [list] | /zerg agents show <id>',
     'Config syntax: /zerg config opens the Pi overlay configuration window when available',
-    'Run syntax: /zerg run <agent> <task> [--bg] [--fork] | /zerg runs [list] | /zerg runs show <run-id> | /zerg interrupt [run-id]',
+    'Run syntax: /zerg run <agent> <task> [--bg] [--fresh|--fork] (fresh is default isolated launch; fork requests inherited context where supported) | /zerg runs [list] | /zerg runs show <run-id> | /zerg interrupt [run-id]',
     'Monitor syntax: /zerg monitor [readonly on|off|toggle|status]',
     'Intervention syntax: /zerg intervene agent <agent-id> <message> | /zerg intervene subagent <agent-id> <message> | /zerg intervene leader <team-id> <message>',
     'Available now: slash-free Pi command registration, aliases, lifecycle state updates, mode/intervention/monitor/control/config commands, runtime health/activity summaries, scaffold status/tree output, thinking-step parsing, text rendering, and Pi event-bus observation.',
@@ -356,9 +356,10 @@ export function renderZergSubagentRunList(runs: readonly ZergSubagentRunSnapshot
   for (const run of runs) {
     const task = run.task ? ` task:${run.task}` : '';
     const label = run.agentLabel ? ` label:${run.agentLabel}` : '';
+    const launchMode = run.launchMode ? ` mode:${run.launchMode}` : '';
     const taskId = run.taskId ? ` task-id:${run.taskId}` : '';
     const startedAt = run.startedAt ? ` started:${run.startedAt}` : '';
-    lines.push(`- ${run.runId} (${run.status}) agent:${run.agentId}${label}${task}${taskId}${startedAt}`);
+    lines.push(`- ${run.runId} (${run.status}) agent:${run.agentId}${label}${launchMode}${task}${taskId}${startedAt}`);
   }
 
   return lines.map((line) => fit(line, width)).join('\n');
@@ -372,6 +373,7 @@ export function renderZergSubagentRunSummary(run: ZergSubagentRunSnapshot, optio
     `label: ${run.agentLabel ?? 'unknown'}`,
     `status: ${run.status}`,
     ...(run.taskId ? [`task-id: ${run.taskId}`] : []),
+    ...(run.launchMode ? [`launch-mode: ${run.launchMode}`] : []),
     `task: ${run.task ?? 'none'}`,
     `started-at: ${run.startedAt ?? 'unknown'}`,
     `updated-at: ${run.updatedAt ?? 'unknown'}`,

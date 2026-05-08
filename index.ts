@@ -2,7 +2,7 @@ import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
 import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderStatusLine, renderZergSubagentRunList, renderZergSubagentRunSummary } from './render.js';
 import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, getAgentDefinition, getAgentDefinitions, getSubagentRunSnapshot, getSubagentRunSnapshots, readSharedZergState, replaceSharedZergState, seedBuiltinAgentDefinitions, snapshotZergState, upsertTask } from './state.js';
-import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
+import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
 
 type ZergIdFactory = {
   runId?: () => string;
@@ -148,8 +148,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.5 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.5 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.6 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.6 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -581,6 +581,7 @@ function dispatchRunCommand(
     return parsed;
   }
 
+  const launchMode = resolveLaunchMode(parsed.request);
   const definitions = getAgentDefinitions(current);
   const resolvedDefinition = definitions.length > 0 ? getAgentDefinition(current, parsed.request.agent) : undefined;
   if (definitions.length > 0 && !resolvedDefinition) {
@@ -597,6 +598,8 @@ function dispatchRunCommand(
   const request: ZergSubagentLaunchRequest = {
     ...parsed.request,
     agent: resolvedAgentId,
+    fork: launchMode === 'fork',
+    launchMode,
     runId,
     taskId,
     agentDefinitionId: resolvedDefinition?.id,
@@ -606,6 +609,7 @@ function dispatchRunCommand(
   const launchMetadata = {
     taskId,
     runId,
+    launchMode,
     ...(resolvedDefinition ? { agentDefinitionId: resolvedDefinition.id } : {}),
     agentDefinitionLabel: resolvedDefinition?.label,
   } as const;
@@ -655,7 +659,7 @@ function dispatchRunCommand(
       ok: true,
       runId,
       taskId,
-      output: appendSpawnIdentifiers(result.message, runId, taskId),
+      output: appendSpawnIdentifiers(appendSpawnLaunchMode(result.message, launchMode), runId, taskId),
     };
   }
 
@@ -687,7 +691,7 @@ function dispatchRunCommand(
     ok: false,
     runId,
     taskId,
-    output: appendSpawnIdentifiers(result.message, runId, taskId),
+    output: appendSpawnIdentifiers(appendSpawnLaunchMode(result.message, launchMode), runId, taskId),
   };
 }
 
@@ -802,21 +806,31 @@ function dispatchControlCommand(
 function parseRunCommand(payload: string): { ok: false; output: string } | { ok: true; request: ZergSubagentLaunchRequest } {
   const tokens = tokenizeRuntimePayload(payload);
   let background = false;
-  let fork = false;
+  let launchMode: ZergSubagentLaunchMode = 'fresh';
+  let sawFresh = false;
+  let sawFork = false;
   const filtered: string[] = [];
   for (const token of tokens) {
     if (token === '--bg' || token === '--background') {
       background = true;
+    } else if (token === '--fresh') {
+      sawFresh = true;
+      launchMode = 'fresh';
     } else if (token === '--fork') {
-      fork = true;
+      sawFork = true;
+      launchMode = 'fork';
     } else {
       filtered.push(token);
     }
   }
 
+  if (sawFresh && sawFork) {
+    return { ok: false, output: 'Conflicting launch modes: use either --fresh or --fork, not both.' };
+  }
+
   const [agent, ...taskTokens] = filtered;
   if (!agent) {
-    return { ok: false, output: 'Usage: /zerg run <agent> <task> [--bg] [--fork]' };
+    return { ok: false, output: 'Usage: /zerg run <agent> <task> [--bg] [--fresh|--fork]' };
   }
 
   const task = taskTokens.join(' ').trim();
@@ -824,7 +838,7 @@ function parseRunCommand(payload: string): { ok: false; output: string } | { ok:
     return { ok: false, output: 'zerg run requires a non-empty task.' };
   }
 
-  return { ok: true, request: { agent, task, background, fork } };
+  return { ok: true, request: { agent, task, background, fork: launchMode === 'fork', launchMode } };
 }
 
 function parseModeCommand(payload: string): ModeParseResult {
@@ -957,6 +971,14 @@ function resolveTaskId(idFactory?: ZergIdFactory): string {
   return sanitizeSpawnId(candidate, DEFAULT_TASK_ID_PREFIX);
 }
 
+function resolveLaunchMode(request: Pick<ZergSubagentLaunchRequest, 'fork' | 'launchMode'>): ZergSubagentLaunchMode {
+  if (request.launchMode === 'fork' || request.fork === true) {
+    return 'fork';
+  }
+
+  return 'fresh';
+}
+
 function sanitizeSpawnId(value: string, prefix: string): string {
   const safe = value.trim().replace(/\s+/g, '-');
   const base = safe.replace(/[^a-zA-Z0-9._-]/g, '-');
@@ -976,6 +998,11 @@ function appendSpawnIdentifiers(message: string, runId: string, taskId: string):
 
   const suffix = `${includesRun ? '' : ` (${runId})`} ${includesTask ? '' : `task:${taskId}`}`.trim();
   return `${message}${suffix ? ` ${suffix}` : ''}`;
+}
+
+function appendSpawnLaunchMode(message: string, launchMode: ZergSubagentLaunchMode): string {
+  const suffix = `(${launchMode})`;
+  return message.includes(suffix) ? message : `${message} ${suffix}`;
 }
 
 function parseRuntimeTransition(entity: ZergRuntimeEntity, payload: string): RuntimeParseResult {
@@ -1244,9 +1271,10 @@ function createPiSlashBridgeAdapter(
     return typeof request.taskId === 'string' && request.taskId.length > 0 ? request.taskId : undefined;
   };
 
-  const resolveLaunchMetadata = (request: ZergSubagentLaunchRequest, taskId: string | undefined) => {
+  const resolveLaunchMetadata = (request: ZergSubagentLaunchRequest, taskId: string | undefined, launchMode: ZergSubagentLaunchMode) => {
     const metadata = {
       ...(taskId ? { taskId } : {}),
+      launchMode,
       ...(request.agentDefinitionId ? { agentDefinitionId: request.agentDefinitionId } : {}),
       ...(request.description ? { description: request.description } : {}),
     };
@@ -1294,6 +1322,7 @@ function createPiSlashBridgeAdapter(
             ...pending.metadata,
           },
           taskId: pending.taskId ?? existing.taskId,
+          launchMode: pending.launchMode ?? existing.launchMode,
           updatedAt: existing.updatedAt ?? pending.updatedAt,
           startedAt: existing.startedAt ?? pending.startedAt,
         }));
@@ -1415,7 +1444,8 @@ function createPiSlashBridgeAdapter(
       const selectedDefinition = getAgentDefinition(container.read(), request.agent);
       const agentLabel = selectedDefinition?.label;
       const taskId = resolveTaskIdFromRun(request);
-      const launchMetadata = resolveLaunchMetadata(request, taskId);
+      const launchMode = resolveLaunchMode(request);
+      const launchMetadata = resolveLaunchMetadata(request, taskId, launchMode);
       const hasExistingRun = container.read().agents[requestId] !== undefined;
 
       runsById.set(requestId, {
@@ -1425,6 +1455,7 @@ function createPiSlashBridgeAdapter(
         task: request.task,
         status: 'idle',
         taskId,
+        launchMode,
         updatedAt: now,
         startedAt: undefined,
         metadata: launchMetadata,
@@ -1491,7 +1522,7 @@ function createPiSlashBridgeAdapter(
           clarify: false,
           agentScope: 'both',
           ...(request.background ? { async: true } : {}),
-          ...(request.fork ? { context: 'fork' as const } : {}),
+          ...(launchMode === 'fork' ? { context: 'fork' as const } : {}),
         },
       });
 
@@ -1523,7 +1554,7 @@ function createPiSlashBridgeAdapter(
 
       run.launched = true;
       updateZergControlState(container, { activeRunId: requestId }, `launched ${request.agent}`, options);
-      return { ok: true, runId: requestId, taskId, message: `zerg launched ${request.agent} as ${requestId}` };
+      return { ok: true, runId: requestId, taskId, message: `zerg launched ${request.agent} as ${requestId} (${launchMode})` };
     },
     interrupt(runId) {
       const target = runId || getZergControlState(container.read()).activeRunId;

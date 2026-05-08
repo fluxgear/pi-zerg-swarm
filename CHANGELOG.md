@@ -7,6 +7,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-rc.6] - 2026-05-08
+
+### Added
+
+- Added explicit `ZergSubagentLaunchMode` values for `fresh` and `fork` subagent launch requests.
+- Added `--fresh` and `--fork` launch-mode parsing for `/zerg run`, with fresh as the default isolated launch mode.
+- Added launch-mode metadata to task-first task/agent records, adapter run snapshots, and `/zerg runs` list/show rendering.
+- Added regression coverage for default fresh, explicit fresh, fork bridge payloads, fresh no-context payloads, conflicting mode flags, legacy `fork: true` compatibility, launch failure audit metadata, and help text.
+
+### Changed
+
+- Updated Pi slash bridge launch handling so fork emits `context: 'fork'` and fresh omits inherited-context bridge payloads.
+- Preserved deprecated `fork?: boolean` launch-request compatibility while normalizing internal behavior to `launchMode`.
+- Bumped package manifest versions from `1.0.0-rc.5` to `1.0.0-rc.6` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, and matching tests from `v1.0.0-rc.5` to `v1.0.0-rc.6`.
+
+### Known Limitations
+
+- Fresh/fork behavior records and transmits launch-mode intent only; transcript copying or stripping remains outside this milestone.
+- Permission queues, mailbox messaging, background output retrieval, cancellation details, and live UI management remain future milestones.
+
 ## [1.0.0-rc.5] - 2026-05-08
 
 ### Added
