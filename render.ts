@@ -65,7 +65,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const permissions = ` | permissions ${permissionQueue.pendingCount} pending`;
 
   return fit(
-    `zerg v1.0.0-rc.7 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${permissions}${activeIntervention}`,
+    `zerg v1.0.0-rc.8 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${permissions}${activeIntervention}`,
     options.width,
   );
 }
@@ -127,9 +127,11 @@ function renderInterventionMessagePreview(message: string, maxLength = 48): stri
 
 function renderMonitorEventLine(event: HookLifecycleEvent, width: number): string {
   const action = event.action ? ` (${event.action})` : '';
+  const substate = event.substate ? `/${event.substate}` : '';
+  const reason = event.substateReason ? ` reason:${sanitizeRuntimeActivity(event.substateReason)}` : '';
   const sequence = `#${event.revision ?? 'event'} `;
   const details = sanitizeRuntimeActivity(event.message || event.type) || event.type;
-  return fit(`  ${sequence}${event.type}${action} ${event.createdAt} ${details}`, width);
+  return fit(`  ${sequence}${event.type}${action}${substate} ${event.createdAt} ${details}${reason}`, width);
 }
 
 export function renderAgentTree(state: ZergState, options: RenderOptions = {}): string {
@@ -332,7 +334,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.7 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0-rc.8 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
@@ -434,8 +436,9 @@ export function renderZergSubagentRunList(runs: readonly ZergSubagentRunSnapshot
     const label = run.agentLabel ? ` label:${run.agentLabel}` : '';
     const launchMode = run.launchMode ? ` mode:${run.launchMode}` : '';
     const taskId = run.taskId ? ` task-id:${run.taskId}` : '';
+    const substate = run.substate ? `/${run.substate}` : '';
     const startedAt = run.startedAt ? ` started:${run.startedAt}` : '';
-    lines.push(`- ${run.runId} (${run.status}) agent:${run.agentId}${label}${launchMode}${task}${taskId}${startedAt}`);
+    lines.push(`- ${run.runId} (${run.status}${substate}) agent:${run.agentId}${label}${launchMode}${task}${taskId}${startedAt}`);
   }
 
   return lines.map((line) => fit(line, width)).join('\n');
@@ -447,7 +450,8 @@ export function renderZergSubagentRunSummary(run: ZergSubagentRunSnapshot, optio
     `subagent run: ${run.runId}`,
     `agent: ${run.agentId}`,
     `label: ${run.agentLabel ?? 'unknown'}`,
-    `status: ${run.status}`,
+    `status: ${run.status}${run.substate ? `/${run.substate}` : ''}`,
+    ...(run.substateReason ? [`substate-reason: ${sanitizeRuntimeActivity(run.substateReason)}`] : []),
     ...(run.taskId ? [`task-id: ${run.taskId}`] : []),
     ...(run.launchMode ? [`launch-mode: ${run.launchMode}`] : []),
     `task: ${run.task ?? 'none'}`,
@@ -462,20 +466,21 @@ function renderAgentLine(agent: AgentIdentity, width: number, prefix: string, se
   const kind = agent.kind ?? 'agent';
   const status = agent.status ?? 'unknown';
   const runtime = renderRuntimeHint(agent.runtime);
-  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, agent.id), interventionTargetIds.has(agent.id))} ${safeLabel(agent.label, agent.id)} [${kind}/${status}]${runtime}`, width);
+  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, agent.id), interventionTargetIds.has(agent.id))} ${safeLabel(agent.label, agent.id)} [${kind}/${renderStatusWithSubstate(status, agent.runtime)}]${runtime}`, width);
 }
 
 function renderTeamLine(team: TeamIdentity, width: number, prefix: string, selectedNodeId: string | undefined, interventionTargetIds: Set<string> = new Set()): string {
   const kind = team.kind ?? 'team';
   const status = team.status ?? 'unknown';
   const runtime = renderRuntimeHint(team.runtime);
-  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, team.id), interventionTargetIds.has(team.id))} team ${safeLabel(team.label, team.id)} [${kind}/${status}]${runtime}`, width);
+  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, team.id), interventionTargetIds.has(team.id))} team ${safeLabel(team.label, team.id)} [${kind}/${renderStatusWithSubstate(status, team.runtime)}]${runtime}`, width);
 }
 
 function renderTaskLine(task: TaskRecord, width: number, prefix: string, selectedNodeId?: string): string {
   const status = task.status ?? 'unknown';
   const blockers = task.blockedBy?.length ? ` blocked-by:${task.blockedBy.join(',')}` : '';
-  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, task.id), false)} task ${safeLabel(task.title, task.id)} [${status}]${blockers}`, width);
+  const reason = task.substateReason ? ` reason:${sanitizeRuntimeActivity(task.substateReason)}` : '';
+  return fit(`${prefix}${statusMarker(status, isSelected(selectedNodeId, task.id), false)} task ${safeLabel(task.title, task.id)} [${task.substate ? `${status}/${task.substate}` : status}]${blockers}${reason}`, width);
 }
 
 function renderExplicitTree(
@@ -593,7 +598,7 @@ function renderTreeNodeLine(
   const marker = statusMarker(status, isSelected(selectedNodeId, node.id, node.refId), interventionTargetIds.has(node.id) || Boolean(node.refId && interventionTargetIds.has(node.refId)));
   const orphan = orphanParent ? ` orphan-parent:${orphanParent}` : '';
   const runtimeHint = renderRuntimeHint(runtime);
-  return fit(`${prefix}${marker} ${node.kind} ${safeLabel(node.label, node.id)} [${status}]${orphan}${runtimeHint}`, width);
+  return fit(`${prefix}${marker} ${node.kind} ${safeLabel(node.label, node.id)} [${renderStatusWithSubstate(status, runtime)}]${orphan}${runtimeHint}`, width);
 }
 
 function findExplicitTreeRuntimeRef(
@@ -650,6 +655,13 @@ function renderRuntimeHint(runtime: AgentIdentity['runtime'] | TeamIdentity['run
   }
 
   const parts = [`health:${runtime.health}`];
+  if (runtime.substate) {
+    parts.push(`state:${runtime.substate}`);
+  }
+  const reason = runtime.substateReason ? sanitizeRuntimeActivity(runtime.substateReason) : '';
+  if (reason) {
+    parts.push(`reason:${reason}`);
+  }
   const lastActivity = runtime.lastActivity ? sanitizeRuntimeActivity(runtime.lastActivity) : '';
 
   if (lastActivity) {
@@ -678,7 +690,13 @@ function renderLatestRuntimeActivity(items: Array<AgentIdentity | TeamIdentity>)
     return undefined;
   }
 
-  return `${latestDisplayable.label}: ${latestDisplayable.activity}`;
+  const substate = latestDisplayable.runtime.substate ? ` [${latestDisplayable.runtime.substate}]` : '';
+  const reason = latestDisplayable.runtime.substateReason ? ` ${sanitizeRuntimeActivity(latestDisplayable.runtime.substateReason)}` : '';
+  return `${latestDisplayable.label}: ${latestDisplayable.activity}${substate}${reason}`;
+}
+
+function renderStatusWithSubstate(status: string, runtime: AgentIdentity['runtime'] | TeamIdentity['runtime']): string {
+  return runtime?.substate ? `${status}/${runtime.substate}` : status;
 }
 
 function runtimeActivityCompare(

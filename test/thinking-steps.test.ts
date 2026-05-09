@@ -6,11 +6,14 @@ import { installInternalPatch } from '../internal-patch.js';
 import { deriveThinkingSteps } from '../parse.js';
 import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderStatusLine } from '../render.js';
 import { appendHookEvent, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createBuiltinAgentDefinitions, createZergState, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getCurrentAgents, getCurrentMode, getCurrentTasks, getCurrentTeams, getCurrentTree, getPendingPermissionRequests, getPermissionQueueState, getSelectedTreeNode, readSharedZergState, removeAgentDefinition, replaceSharedZergState, replayRuntimeTransitions, resetZergState, resolvePermissionRequest, selectNode, setMode, snapshotZergState, upsertAgentDefinition, updateSharedZergState, updateZergState, upsertAgent, upsertTeam, upsertTreeNode } from '../state.js';
-import { ZERG_STATE_SCHEMA_VERSION, type HookLifecycleEvent, type StructuralPiCommandContext, type StructuralPiCommandOptions, type TeamIdentity, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchRequest, type ZergTreeNode } from '../types.js';
+import { ZERG_STATE_SCHEMA_VERSION, type AgentStatus, type HookLifecycleEvent, type StructuralPiCommandContext, type StructuralPiCommandOptions, type TaskStatus, type TeamIdentity, type ZergLifecycleSubstate, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchRequest, type ZergTreeNode } from '../types.js';
 
 type AssertAssignable<T extends true> = T;
 type ContainerReadReturnsState = AssertAssignable<ReturnType<ZergStateContainer['read']> extends ZergState ? true : false>;
 type RegistrationStateExposesSnapshot = AssertAssignable<ZergExtensionRegistration['state'] extends ZergState ? true : false>;
+type _assertAgentStatusCompatibility = AssertAssignable<AgentStatus extends 'idle' | 'running' | 'blocked' | 'needs-attention' | 'done' | 'failed' ? true : false>;
+type _assertTaskStatusCompatibility = AssertAssignable<TaskStatus extends AgentStatus ? true : false>;
+type _assertLifecycleSubstateIncludesWaitingPermission = AssertAssignable<'waiting-permission' extends ZergLifecycleSubstate ? true : false>;
 
 const VALID_AGENT_RUNTIME_TRANSITION = {
   entity: 'agent',
@@ -604,7 +607,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.7 internal patch unavailable; command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.8 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -617,11 +620,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.7 internal patch unavailable; command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.8 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.7 internal patch unavailable; command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.8 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -744,6 +747,38 @@ test('applyRuntimeTransition records deterministic agent and team lifecycle stat
   assert.deepEqual(state.events.map((event) => event.action), ['create', 'start', 'progress', 'stop', 'create', 'fail', 'reset']);
   assert.equal(state.events[2]?.message, 'agent worker progress: editing state');
   assert.equal(state.events[5]?.health, 'failed');
+});
+
+test('lifecycle substates map actions sanitize reasons and clone snapshots', () => {
+  const longReason = `  waiting\n${String.fromCharCode(0)} ${'x'.repeat(200)}  `;
+  let state = applyRuntimeTransition(createZergState(), {
+    entity: 'agent',
+    action: 'create',
+    id: 'worker',
+    label: 'Worker',
+    substateReason: longReason,
+    at: '2026-05-08T22:00:00.000Z',
+  });
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'start', id: 'worker', at: '2026-05-08T22:01:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'progress', id: 'worker', activity: 'tool edit', at: '2026-05-08T22:02:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'progress', id: 'worker', activity: 'custom', substate: 'waiting-input', substateReason: 'operator input', at: '2026-05-08T22:03:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'agent', action: 'stop', id: 'worker', at: '2026-05-08T22:04:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'team', action: 'fail', id: 'ops', at: '2026-05-08T22:05:00.000Z' });
+  state = applyRuntimeTransition(state, { entity: 'team', action: 'reset', id: 'ops', at: '2026-05-08T22:06:00.000Z' });
+
+  assert.equal(state.agents.worker?.status, 'done');
+  assert.equal(state.agents.worker?.runtime?.substate, 'completed');
+  assert.equal(state.agents.worker?.runtime?.substateUpdatedAt, '2026-05-08T22:04:00.000Z');
+  assert.equal(state.teams.ops?.status, 'idle');
+  assert.equal(state.teams.ops?.runtime?.substate, 'reset');
+  assert.deepEqual(state.events.map((event) => event.substate), ['queued', 'starting', 'tool-running', 'waiting-input', 'completed', 'failed', 'reset']);
+  assert.equal(state.events[0]?.substateReason?.includes('\n'), false);
+  assert.equal((state.events[0]?.substateReason ?? '').length, 160);
+  assert.equal(state.events[3]?.substateReason, 'operator input');
+
+  const snapshot = snapshotZergState(state);
+  snapshot.agents.worker!.runtime!.substateReason = 'mutated';
+  assert.equal(state.agents.worker?.runtime?.substateReason, undefined);
 });
 
 test('replayRuntimeTransitions is deterministic and bounds transition events', () => {
@@ -1122,6 +1157,35 @@ test('read-only interrupt queues permission without emitting cancel', async () =
 });
 
 
+test('permission decisions update waiting run lifecycle without coarse status drift', () => {
+  let state = applyRuntimeTransition(createZergState({
+    mode: { automation: 'manual', interventionEnabled: true, controller: 'operator', readOnly: true },
+  }), {
+    entity: 'agent',
+    action: 'start',
+    id: 'zerg-existing',
+    kind: 'subagent',
+    at: '2026-05-08T21:12:00.000Z',
+  });
+  const container = createZergStateContainer(state);
+  const handler = createZergCommandHandler(container, { now: () => new Date('2026-05-08T21:12:30.000Z') });
+
+  const queued = handler('/zerg interrupt zerg-existing');
+  assert.equal(queued.ok, false);
+  state = container.snapshot();
+  assert.equal(state.agents['zerg-existing']?.status, 'blocked');
+  assert.equal(state.agents['zerg-existing']?.runtime?.substate, 'waiting-permission');
+  const permissionRequestId = getPermissionQueueState(state).lastRequestId;
+  assert.equal((state.agents['zerg-existing']?.metadata as { permissionRequestId?: string } | undefined)?.permissionRequestId, permissionRequestId);
+
+  const denied = handler(`/zerg permission deny ${permissionRequestId} unsafe`);
+  assert.equal(denied.ok, true);
+  state = container.snapshot();
+  assert.equal(state.agents['zerg-existing']?.status, 'failed');
+  assert.equal(state.agents['zerg-existing']?.runtime?.substate, 'failed');
+  assert.equal(getPermissionQueueState(state).requests[0]?.status, 'denied');
+});
+
 test('permission rendering surfaces pending count and sanitized summaries', () => {
   const state = enqueuePermissionRequest(createZergState(), {
     kind: 'adapter',
@@ -1149,7 +1213,7 @@ test('createZergCommandHandler applies mode status transitions and revert', () =
 
   const readOnlyStatus = readOnlyHandler('/zerg mode status');
   assert.equal(readOnlyStatus.ok, true);
-  assert.ok(readOnlyStatus.output.includes('zerg v1.0.0-rc.7 command surface'));
+  assert.ok(readOnlyStatus.output.includes('zerg v1.0.0-rc.8 command surface'));
   assert.ok(readOnlyStatus.output.includes('control operator'));
   assert.ok(readOnlyStatus.output.includes('mode manual'));
   assert.ok(readOnlyStatus.output.includes('no active intervention'));
@@ -1358,7 +1422,7 @@ test('render surfaces expose control intervention status tree markers and help s
   assert.ok(idleStatus.includes('control operator'));
   assert.ok(idleStatus.includes('mode manual'));
   assert.ok(idleStatus.includes('no active intervention'));
-  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.0-rc.7 command-surface scaffold');
+  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.0-rc.8 command-surface scaffold');
   assert.ok(idleHelp.includes('Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]'));
   assert.ok(idleHelp.includes('Monitor syntax: /zerg monitor [readonly on|off|toggle|status]'));
   assert.ok(idleHelp.includes('Registry syntax: /zerg agents [list] | /zerg agents show <id>'));
@@ -1425,7 +1489,7 @@ test('renderMonitor combines monitor header, runtime status, tree, and recent ev
   const monitor = renderMonitor(state, { width: 240, recentEventCount: 2 });
 
   assert.ok(monitor.includes('zerg monitor'));
-  assert.ok(monitor.includes('status: zerg v1.0.0-rc.7 command surface'));
+  assert.ok(monitor.includes('status: zerg v1.0.0-rc.8 command surface'));
   assert.ok(monitor.includes('read-only: enabled'));
   assert.ok(monitor.includes('tree:'));
   assert.ok(monitor.includes('recent events:'));
@@ -1579,6 +1643,8 @@ test('createZergCommandHandler launches subagents through configured adapter and
   assert.equal(seededState.tasks['task-1']?.title, 'fix bug');
   assert.equal(seededState.tasks['task-1']?.status, 'running');
   assert.equal(seededState.agents['zerg-run-1']?.status, 'idle');
+  assert.equal(seededState.agents['zerg-run-1']?.runtime?.substate, 'spawning');
+  assert.equal(seededState.tasks['task-1']?.substate, 'queued');
   assert.equal((seededState.agents['zerg-run-1']?.metadata as { taskId?: string } | undefined)?.taskId, 'task-1');
   assert.equal((seededState.agents['zerg-run-1']?.metadata as { launchMode?: string } | undefined)?.launchMode, 'fork');
   assert.equal((seededState.tasks['task-1']?.metadata as { launchMode?: string } | undefined)?.launchMode, 'fork');
@@ -1602,6 +1668,8 @@ test('createZergCommandHandler launches subagents through configured adapter and
   const interrupted = handler('/zerg interrupt fake-run');
   assert.equal(interrupted.ok, true);
   assert.deepEqual(interrupts, ['fake-run']);
+  assert.equal(container.snapshot().agents['fake-run']?.runtime?.substate, 'cancelling');
+  assert.equal(container.snapshot().agents['fake-run']?.status, 'running');
 
   handler('/zerg control readonly on');
   const stateBeforeBlocked = container.snapshot();
@@ -1903,6 +1971,9 @@ test('run snapshot helper clones exact public shape', () => {
     status: 'running' as const,
     taskId: 'task-1',
     launchMode: 'fresh' as const,
+    substate: 'executing' as const,
+    substateReason: 'running tool',
+    substateUpdatedAt: '2026-05-07T00:00:00.500Z',
     startedAt: '2026-05-07T00:00:00.000Z',
     updatedAt: '2026-05-07T00:00:01.000Z',
     metadata: { nested: { tags: ['original'] } },
@@ -1922,6 +1993,9 @@ test('run snapshot helper clones exact public shape', () => {
     'runId',
     'startedAt',
     'status',
+    'substate',
+    'substateReason',
+    'substateUpdatedAt',
     'task',
     'taskId',
     'updatedAt',
@@ -2062,11 +2136,17 @@ test('registerZergSwarmExtension wires zerg run to pi-subagents slash bridge eve
   const fixedAgent = state.agents['zerg-fixed-run'];
   assert.ok(fixedAgent);
   assert.equal(fixedAgent.status, 'done');
+  assert.equal(fixedAgent.runtime?.substate, 'completed');
   assert.equal(fixedAgent.id, 'zerg-fixed-run');
   assert.equal((fixedAgent.metadata as { taskId?: string } | undefined)?.taskId, 'task-fixed-run');
   assert.equal((fixedAgent.metadata as { launchMode?: string } | undefined)?.launchMode, 'fork');
   assert.equal(state.tasks['task-fixed-run']?.ownerAgentId, 'zerg-fixed-run');
   assert.equal((state.tasks['task-fixed-run']?.metadata as { launchMode?: string } | undefined)?.launchMode, 'fork');
+  assert.equal(state.tasks['task-fixed-run']?.status, 'done');
+  assert.equal(state.tasks['task-fixed-run']?.substate, 'completed');
+  assert.ok(state.events.some((event) => event.agentId === 'zerg-fixed-run' && event.substate === 'starting'));
+  assert.ok(state.events.some((event) => event.agentId === 'zerg-fixed-run' && event.substate === 'tool-running'));
+  assert.ok(state.events.some((event) => event.agentId === 'zerg-fixed-run' && event.substate === 'completed'));
 
   const currentRunId = fixedAgent.id;
   assert.ok(currentRunId);
@@ -2076,6 +2156,7 @@ test('registerZergSwarmExtension wires zerg run to pi-subagents slash bridge eve
   assert.equal(notifications.some((message) => message.includes('subagent runs:')), true);
   assert.equal(notifications.some((message) => message.includes('task-id:task-fixed-run')), true);
   assert.equal(notifications.some((message) => message.includes('mode:fork')), true);
+  assert.equal(notifications.some((message) => message.includes('(done/completed)')), true);
 
   if (currentRunId) {
     notifications.length = 0;
@@ -2083,6 +2164,7 @@ test('registerZergSwarmExtension wires zerg run to pi-subagents slash bridge eve
     assert.equal(notifications.some((message) => message.includes(`subagent run: ${currentRunId}`)), true);
     assert.equal(notifications.some((message) => message.includes('task-id: task-fixed-run')), true);
     assert.equal(notifications.some((message) => message.includes('launch-mode: fork')), true);
+    assert.equal(notifications.some((message) => message.includes('status: done/completed')), true);
   }
 
   registration.dispose();
@@ -2288,7 +2370,12 @@ test('createZergCommandHandler applies lifecycle commands only with writable sta
 
   assert.equal(handler('/zerg agent create worker Worker One').ok, true);
   assert.equal(handler('agent start worker').ok, true);
-  assert.equal(handler('agent progress worker "editing state"').ok, true);
+  const beforeInvalidSubstate = container.snapshot();
+  const invalidSubstate = handler('agent progress worker --substate nope "bad"');
+  assert.equal(invalidSubstate.ok, false);
+  assert.equal(invalidSubstate.output, 'Unknown lifecycle substate: nope');
+  assert.deepEqual(container.snapshot(), beforeInvalidSubstate);
+  assert.equal(handler('agent progress worker "editing state" --substate tool-running --substate-reason "tool edit"').ok, true);
   assert.equal(handler('team create ops Operations').ok, true);
   assert.equal(handler('team start ops').ok, true);
   assert.equal(handler('team stop ops').ok, true);
@@ -2300,6 +2387,8 @@ test('createZergCommandHandler applies lifecycle commands only with writable sta
   assert.equal(snapshot.agents.worker?.runtime?.startedAt, commandAt);
   assert.equal(snapshot.agents.worker?.runtime?.lastActivityAt, commandAt);
   assert.equal(snapshot.agents.worker?.runtime?.lastActivity, 'editing state');
+  assert.equal(snapshot.agents.worker?.runtime?.substate, 'tool-running');
+  assert.equal(snapshot.agents.worker?.runtime?.substateReason, 'tool edit');
   assert.equal(snapshot.teams.ops?.label, 'Operations');
   assert.equal(snapshot.teams.ops?.status, 'done');
   assert.equal(snapshot.teams.ops?.runtime?.createdAt, commandAt);
@@ -2308,6 +2397,7 @@ test('createZergCommandHandler applies lifecycle commands only with writable sta
   assert.equal(snapshot.metadata.updatedAt, commandAt);
   assert.notEqual(snapshot.metadata.updatedAt, '1970-01-01T00:00:00.000Z');
   assert.deepEqual(snapshot.events.map((event) => event.action), ['create', 'start', 'progress', 'create', 'start', 'stop']);
+  assert.deepEqual(snapshot.events.map((event) => event.substate), ['queued', 'starting', 'tool-running', 'queued', 'starting', 'completed']);
   assert.deepEqual(snapshot.events.map((event) => event.createdAt), [commandAt, commandAt, commandAt, commandAt, commandAt, commandAt]);
 });
 
@@ -2406,9 +2496,9 @@ test('registered Pi command handlers mutate extension and shared lifecycle state
     assert.ok(teamStopNotification.message.includes('Operations: stopped'));
     assert.ok(statusNotification?.message.includes('agents 1 (0 running)'));
     assert.ok(statusNotification?.message.includes('teams 1 (0 running)'));
-    assert.ok(statusNotification?.message.includes('last Operations: stopped'));
-    assert.ok(treeNotification?.message.includes('Worker [subagent/done] {health:stopped last:stopped}'));
-    assert.ok(treeNotification?.message.includes('team Operations [team/done] {health:stopped last:stopped}'));
+    assert.ok(statusNotification?.message.includes('last Operations: stopped [completed]'));
+    assert.ok(treeNotification?.message.includes('Worker [subagent/done/completed] {health:stopped state:completed last:stopped}'));
+    assert.ok(treeNotification?.message.includes('team Operations [team/done/completed] {health:stopped state:completed last:stopped}'));
     assert.ok(agentStartNotification.message.includes('agent worker start applied.'));
     assert.ok(teamCreateNotification.message.includes('team ops create applied.'));
     assert.ok(teamStartNotification.message.includes('team ops start applied.'));
@@ -2531,13 +2621,13 @@ test('render monitoring summarizes runtime health activity without mutation', ()
   const status = renderStatusLine(state, { width: 240 });
   const tree = renderAgentTree(state, { width: 240 });
 
-  assert.ok(status.includes('zerg v1.0.0-rc.7 command surface'));
+  assert.ok(status.includes('zerg v1.0.0-rc.8 command surface'));
   assert.ok(status.includes('agents 1 (1 running)'));
   assert.ok(status.includes('teams 1 (0 running)'));
   assert.ok(status.includes('unhealthy 1'));
-  assert.ok(status.includes('last Ops: blocked on review'));
-  assert.ok(tree.includes('Worker [subagent/running] {health:healthy last:editing state}'));
-  assert.ok(tree.includes('team Ops [team/failed] {health:failed last:blocked on review}'));
+  assert.ok(status.includes('last Ops: blocked on review [failed]'));
+  assert.ok(tree.includes('Worker [subagent/running/executing] {health:healthy state:executing last:editing state}'));
+  assert.ok(tree.includes('team Ops [team/failed/failed] {health:failed state:failed last:blocked on review}'));
   assert.equal(JSON.stringify(state), before);
 });
 
@@ -2552,7 +2642,7 @@ test('renderStatusLine uses deterministic latest runtime ordering when timestamp
 
   assert.equal(state.agents.worker?.runtime?.lastActivitySequence, 3);
   assert.equal(state.teams.ops?.runtime?.lastActivitySequence, 4);
-  assert.ok(status.includes('last Operations: team review'));
+  assert.ok(status.includes('last Operations: team review [executing]'));
 });
 
 test('renderStatusLine falls back to newest displayable runtime activity when latest sanitizes to empty', () => {
@@ -2564,7 +2654,7 @@ test('renderStatusLine falls back to newest displayable runtime activity when la
 
   const status = renderStatusLine(state, { width: 240 });
 
-  assert.ok(status.includes('last Worker: editing state'));
+  assert.ok(status.includes('last Worker: editing state [executing]'));
   assert.ok(!status.includes('last Ops:'));
 });
 
@@ -2594,8 +2684,8 @@ test('explicit-tree rendering resolves referenced live agent and team runtimes',
 
   const tree = renderAgentTree(state, { width: 240 });
 
-  assert.ok(tree.includes('agent Worker node [running] {health:healthy last:editing state}'));
-  assert.ok(tree.includes('team Operations node [running] {health:failed last:blocked on review}'));
+  assert.ok(tree.includes('agent Worker node [running/executing] {health:healthy state:executing last:editing state}'));
+  assert.ok(tree.includes('team Operations node [running/failed] {health:failed state:failed last:blocked on review}'));
 });
 
 test('runtime activity sanitizes control whitespace to keep status and tree output one line each', () => {
@@ -2620,6 +2710,7 @@ test('runtime activity sanitizes control whitespace to keep status and tree outp
   assert.equal(status.split('\n').length, 1);
   assert.equal(tree.split('\n').length, 2);
   assert.ok(status.includes('last Worker: line one line two line three'));
+  assert.ok(renderStatusLine(state, { width: 240 }).includes('last Worker: line one line two line three [executing]'));
   assert.ok(tree.includes('line one line two line three'));
   assert.equal(narrowStatus.split('\n').length, 1);
   assert.equal(narrowTree.split('\n').length, 2);
@@ -2770,7 +2861,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.7 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.8 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -2790,8 +2881,8 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
   try {
     assert.equal(registration.patchInstalled, true);
     assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
-    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.7 internal patch path active']);
-    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.7 internal patch path active']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.8 internal patch path active']);
+    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.8 internal patch path active']);
 
     eventBus.emit('zerg:smoke');
 
@@ -2815,7 +2906,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
     });
 
     assert.equal(notifications.length, 1);
-    assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.7 command surface'));
+    assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.8 command surface'));
     assert.equal(notifications[0]?.type, 'info');
   } finally {
     registration.dispose();

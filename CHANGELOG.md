@@ -7,6 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-rc.8] - 2026-05-09
+
+### Added
+
+- Added `ZergLifecycleSubstate` with fine-grained queued, spawning, starting, waiting, executing, tool-running, compacting, cancelling, completed, failed, and reset lifecycle values while preserving coarse `AgentStatus` and `TaskStatus` compatibility.
+- Added optional lifecycle substate, reason, and update timestamp fields to runtime state, task records, lifecycle events, and subagent run snapshots.
+- Added deterministic runtime transition substate mapping, sanitized bounded substate reasons, and clone-safe snapshot handling.
+- Added lifecycle command `--substate`, `--substate=<value>`, and `substate=<value>` parsing with invalid-substate no-mutation rejection.
+- Added run, Pi slash-bridge, interrupt, and permission-wait lifecycle substate integration, including bridge task completion/failure state updates.
+- Added compact substate hints to status, tree, monitor, control, config, and run list/show rendering.
+- Added regression coverage for substate mapping, sanitization, clone isolation, command parsing, bridge run/task flow, interrupt cancellation, permission waits, rendering, and coarse status compatibility.
+
+### Changed
+
+- Kept public coarse lifecycle status unions unchanged while layering detailed substates onto runtime/task metadata.
+- Bumped package manifest versions from `1.0.0-rc.7` to `1.0.0-rc.8` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, and matching tests from `v1.0.0-rc.7` to `v1.0.0-rc.8`.
+
+### Known Limitations
+
+- External Pi lifecycle payload semantics remain limited to verified slash-bridge events; private Pi lifecycle event integration is deferred.
+- Lifecycle substates are in-memory command/runtime metadata and do not add process supervision or durable run logs.
+
 ## [1.0.0-rc.7] - 2026-05-08
 
 ### Added

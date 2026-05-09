@@ -9,6 +9,23 @@ export type TaskStatus = AgentStatus;
 export type AutomationMode = 'manual' | 'assisted' | 'automatic';
 export type ZergMode = AutomationMode;
 export type ZergRuntimeTransitionAction = 'create' | 'start' | 'progress' | 'stop' | 'fail' | 'reset';
+export type ZergLifecycleSubstate =
+  | 'queued'
+  | 'spawning'
+  | 'starting'
+  | 'planning'
+  | 'waiting-permission'
+  | 'waiting-input'
+  | 'executing'
+  | 'tool-running'
+  | 'streaming-output'
+  | 'compacting'
+  | 'idle'
+  | 'stopping'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'reset';
 export type ZergRuntimeHealth = 'unknown' | 'healthy' | 'degraded' | 'blocked' | 'failed' | 'stopped';
 export type ZergRuntimeEntity = 'agent' | 'team';
 export type ThinkingStepStatus = 'todo' | 'running' | 'blocked' | 'done' | 'failed' | 'unknown';
@@ -95,6 +112,9 @@ export interface ZergSubagentRunSnapshot {
   status: AgentStatus;
   taskId?: string;
   launchMode?: ZergSubagentLaunchMode;
+  substate?: ZergLifecycleSubstate;
+  substateReason?: string;
+  substateUpdatedAt?: string;
   startedAt?: string;
   updatedAt?: string;
   metadata?: ZergExtensionFields;
@@ -174,6 +194,9 @@ export interface ZergRuntimeState {
   lastActivity?: string;
   lastActivitySequence?: number;
   lastActivityRevision?: number;
+  substate?: ZergLifecycleSubstate;
+  substateReason?: string;
+  substateUpdatedAt?: string;
   health: ZergRuntimeHealth;
   mode: ZergRuntimeModeContext;
 }
@@ -185,6 +208,8 @@ interface ZergRuntimeTransitionBase {
   status?: AgentStatus;
   health?: ZergRuntimeHealth;
   activity?: string;
+  substate?: ZergLifecycleSubstate;
+  substateReason?: string;
   at?: string;
   mode?: Partial<ZergRuntimeModeContext>;
   contextId?: string;
@@ -253,6 +278,9 @@ export interface TaskRecord {
   parentId?: string;
   blockedBy?: string[];
   contextId?: string;
+  substate?: ZergLifecycleSubstate;
+  substateReason?: string;
+  substateUpdatedAt?: string;
   updatedAt: string;
   metadata?: ZergExtensionFields;
   extensions?: ZergExtensionFields;
@@ -265,6 +293,8 @@ export interface HookLifecycleEvent {
   status?: AgentStatus | TaskStatus | ThinkingStepStatus;
   action?: ZergRuntimeTransitionAction;
   health?: ZergRuntimeHealth;
+  substate?: ZergLifecycleSubstate;
+  substateReason?: string;
   mode?: ZergRuntimeModeContext;
   intervention?: PermissionModeIntervention;
   previousMode?: PermissionModeSnapshot;

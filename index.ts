@@ -2,7 +2,7 @@ import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
 import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderPermissionQueueStatus, renderStatusLine, renderZergSubagentRunList, renderZergSubagentRunSummary } from './render.js';
 import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, readSharedZergState, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertTask } from './state.js';
-import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
+import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
 
 type ZergIdFactory = {
   runId?: () => string;
@@ -148,8 +148,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.7 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.7 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.8 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.8 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -632,7 +632,10 @@ function dispatchPermissionCommand(
       reason,
       resolvedBy: 'operator',
     });
-    const next = container.replace(resolved);
+    const withLifecycle = decision === 'deny' || decision === 'cancel'
+      ? markPermissionRequestTerminalLifecycle(resolved, request.runId, decision, options)
+      : resolved;
+    const next = container.replace(withLifecycle);
     if (options.syncSharedState) {
       replaceSharedZergState(next);
     }
@@ -728,6 +731,9 @@ function dispatchRunCommand(
     status: 'running' as const,
     ownerAgentId: runId,
     updatedAt: nowTimestamp,
+    substate: 'queued' as const,
+    substateReason: 'waiting for adapter launch',
+    substateUpdatedAt: nowTimestamp,
     metadata: launchMetadata,
   };
 
@@ -739,6 +745,8 @@ function dispatchRunCommand(
     label: resolvedAgentLabel,
     kind: 'subagent',
     activity: parsed.request.task,
+    substate: 'spawning',
+    substateReason: 'adapter launch requested',
   }, { now: () => new Date(nowTimestamp) });
 
   const withAgentMetadata = {
@@ -779,6 +787,8 @@ function dispatchRunCommand(
       label: resolvedAgentLabel,
       kind: 'subagent',
       activity: result.message || 'adapter launch failed',
+      substate: 'failed',
+      substateReason: result.message || 'adapter launch failed',
     }, { now: () => new Date(nowTimestamp) }),
     {
       id: taskId,
@@ -786,6 +796,9 @@ function dispatchRunCommand(
       status: 'failed',
       ownerAgentId: runId,
       updatedAt: nowTimestamp,
+      substate: 'failed',
+      substateReason: result.message || 'adapter launch failed',
+      substateUpdatedAt: nowTimestamp,
       metadata: launchMetadata,
     },
   );
@@ -867,11 +880,14 @@ function dispatchInterruptCommand(
       summary: `Interrupt ${targetRunId ?? 'active run'}`,
       details: 'read-only blocked /zerg interrupt',
     }, { now: options.now ?? (() => new Date()) });
-    const snapshot = container.replace(queued);
+    const requestId = getPermissionQueueState(queued).lastRequestId;
+    const waiting = targetRunId && queued.agents[targetRunId]
+      ? markRunWaitingForPermission(queued, targetRunId, requestId, options)
+      : queued;
+    const snapshot = container.replace(waiting);
     if (options.syncSharedState) {
       replaceSharedZergState(snapshot);
     }
-    const requestId = getPermissionQueueState(snapshot).lastRequestId;
     return {
       ok: false,
       output: `zerg interrupt is blocked while read-only is enabled; queued for permission as ${requestId}. Use /zerg permission approve ${requestId} or /zerg permission deny ${requestId}.`,
@@ -884,6 +900,25 @@ function dispatchInterruptCommand(
   }
 
   const result = adapter.interrupt(runId);
+  if (result.ok && container) {
+    const targetRunId = result.runId || runId || getZergControlState(container.read()).activeRunId;
+    if (targetRunId) {
+      const interrupted = applyRuntimeTransition(container.read(), {
+        entity: 'agent',
+        action: 'progress',
+        id: targetRunId,
+        kind: 'subagent',
+        status: 'running',
+        activity: 'interrupt requested',
+        substate: 'cancelling',
+        substateReason: result.message,
+      }, { now: options.now ?? (() => new Date()) });
+      const snapshot = container.replace(interrupted);
+      if (options.syncSharedState) {
+        replaceSharedZergState(snapshot);
+      }
+    }
+  }
   return { ok: result.ok, output: result.message };
 }
 
@@ -1158,12 +1193,19 @@ function parseRuntimeTransition(entity: ZergRuntimeEntity, payload: string): Run
     return { ok: false, output: `${entity} ${action} requires an id.` };
   }
 
-  const text = rest.join(' ').trim();
+  const parsedSubstate = parseLifecycleSubstateOptions(rest);
+  if (!parsedSubstate.ok) {
+    return parsedSubstate;
+  }
+
+  const text = parsedSubstate.tokens.join(' ').trim();
   const common = {
     action,
     id,
     ...(action === 'create' && text ? { label: text } : {}),
     ...((action === 'progress' || action === 'fail') && text ? { activity: text } : {}),
+    ...(parsedSubstate.substate ? { substate: parsedSubstate.substate } : {}),
+    ...(parsedSubstate.substateReason ? { substateReason: parsedSubstate.substateReason } : {}),
   } as const;
 
   if (entity === 'agent') {
@@ -1171,6 +1213,57 @@ function parseRuntimeTransition(entity: ZergRuntimeEntity, payload: string): Run
   }
 
   return { ok: true, transition: { entity: 'team', ...common } };
+}
+
+function parseLifecycleSubstateOptions(tokens: string[]): { ok: true; tokens: string[]; substate?: ZergLifecycleSubstate; substateReason?: string } | { ok: false; output: string } {
+  const remaining: string[] = [];
+  let substate: ZergLifecycleSubstate | undefined;
+  let substateReason: string | undefined;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const lower = token.toLowerCase();
+    if (lower === '--substate') {
+      const value = tokens[index + 1];
+      if (!isLifecycleSubstate(value)) {
+        return { ok: false, output: `Unknown lifecycle substate: ${value ?? ''}` };
+      }
+      substate = value;
+      index += 1;
+    } else if (lower.startsWith('--substate=')) {
+      const value = token.slice('--substate='.length);
+      if (!isLifecycleSubstate(value)) {
+        return { ok: false, output: `Unknown lifecycle substate: ${value}` };
+      }
+      substate = value;
+    } else if (lower.startsWith('substate=')) {
+      const value = token.slice('substate='.length);
+      if (!isLifecycleSubstate(value)) {
+        return { ok: false, output: `Unknown lifecycle substate: ${value}` };
+      }
+      substate = value;
+    } else if (lower === '--substate-reason') {
+      const value = tokens[index + 1] ?? '';
+      const normalized = normalizeInterventionText(value, MAX_INTERVENTION_MESSAGE_LENGTH_FOR_REASONS);
+      if (value && !normalized) {
+        return { ok: false, output: `lifecycle substate reason exceeds ${MAX_INTERVENTION_MESSAGE_LENGTH_FOR_REASONS} characters or contains only control characters.` };
+      }
+      substateReason = normalized || undefined;
+      index += 1;
+    } else if (lower.startsWith('substatereason=') || lower.startsWith('substate-reason=')) {
+      const separator = token.indexOf('=');
+      const value = separator >= 0 ? token.slice(separator + 1) : '';
+      const normalized = normalizeInterventionText(value, MAX_INTERVENTION_MESSAGE_LENGTH_FOR_REASONS);
+      if (value && !normalized) {
+        return { ok: false, output: `lifecycle substate reason exceeds ${MAX_INTERVENTION_MESSAGE_LENGTH_FOR_REASONS} characters or contains only control characters.` };
+      }
+      substateReason = normalized || undefined;
+    } else {
+      remaining.push(token);
+    }
+  }
+
+  return { ok: true, tokens: remaining, substate, substateReason };
 }
 
 function tokenizeRuntimePayload(payload: string): string[] {
@@ -1196,6 +1289,25 @@ function isRuntimeAction(value: string | undefined): value is ZergRuntimeTransit
   return value === 'create' || value === 'start' || value === 'progress' || value === 'stop' || value === 'fail' || value === 'reset';
 }
 
+function isLifecycleSubstate(value: string | undefined): value is ZergLifecycleSubstate {
+  return value === 'queued'
+    || value === 'spawning'
+    || value === 'starting'
+    || value === 'planning'
+    || value === 'waiting-permission'
+    || value === 'waiting-input'
+    || value === 'executing'
+    || value === 'tool-running'
+    || value === 'streaming-output'
+    || value === 'compacting'
+    || value === 'idle'
+    || value === 'stopping'
+    || value === 'cancelling'
+    || value === 'completed'
+    || value === 'failed'
+    || value === 'reset';
+}
+
 function isPermissionRequestKind(value: string | undefined): value is ZergPermissionRequestKind {
   return value === 'run' || value === 'interrupt' || value === 'tool' || value === 'mode' || value === 'intervention' || value === 'adapter';
 }
@@ -1216,6 +1328,87 @@ function permissionPastTense(decision: ZergPermissionDecision): string {
       : decision === 'cancel'
         ? 'cancelled'
         : 'expired';
+}
+
+function updateRunTaskLifecycle(
+  state: ZergState,
+  taskId: string | undefined,
+  status: AgentStatus,
+  substate: ZergLifecycleSubstate,
+  substateReason: string | undefined,
+  updatedAt: string,
+): ZergState {
+  if (!taskId || !state.tasks[taskId]) {
+    return state;
+  }
+
+  const task = state.tasks[taskId];
+  return upsertTask(state, {
+    ...task,
+    status,
+    substate,
+    substateReason,
+    substateUpdatedAt: updatedAt,
+    updatedAt,
+  });
+}
+
+function markPermissionRequestTerminalLifecycle(
+  state: ZergState,
+  runId: string | undefined,
+  decision: ZergPermissionDecision,
+  options: RuntimeCommandOptions,
+): ZergState {
+  if (!runId || !state.agents[runId]) {
+    return state;
+  }
+
+  const reason = decision === 'deny' ? 'permission denied' : 'permission cancelled';
+  return applyRuntimeTransition(state, {
+    entity: 'agent',
+    action: 'fail',
+    id: runId,
+    kind: 'subagent',
+    activity: reason,
+    substate: 'failed',
+    substateReason: reason,
+  }, { now: options.now ?? (() => new Date()) });
+}
+
+function markRunWaitingForPermission(
+  state: ZergState,
+  runId: string,
+  permissionRequestId: string | undefined,
+  options: RuntimeCommandOptions,
+): ZergState {
+  const waiting = applyRuntimeTransition(state, {
+    entity: 'agent',
+    action: 'progress',
+    id: runId,
+    kind: 'subagent',
+    status: 'blocked',
+    activity: 'waiting for permission',
+    substate: 'waiting-permission',
+    substateReason: permissionRequestId ? `permission ${permissionRequestId}` : 'permission required',
+  }, { now: options.now ?? (() => new Date()) });
+  const agent = waiting.agents[runId];
+  if (!agent || !permissionRequestId) {
+    return waiting;
+  }
+
+  return {
+    ...waiting,
+    agents: {
+      ...waiting.agents,
+      [runId]: {
+        ...agent,
+        metadata: {
+          ...agent.metadata,
+          permissionRequestId,
+        },
+      },
+    },
+  };
 }
 
 function resolveAvailableRuns(
@@ -1394,10 +1587,14 @@ function isAutomationMode(value: string): value is AutomationMode {
 
 function getConfigTargets(state: ZergState): Array<{ id: string; label: string; kind: string; status: string }> {
   return [
-    ...Object.values(state.agents).map((agent) => ({ id: agent.id, label: agent.label, kind: agent.kind, status: agent.status })),
-    ...Object.values(state.teams).map((team) => ({ id: team.id, label: team.label, kind: team.kind, status: team.status })),
-    ...Object.values(state.tasks).map((task) => ({ id: task.id, label: task.title, kind: 'task', status: task.status })),
+    ...Object.values(state.agents).map((agent) => ({ id: agent.id, label: agent.label, kind: agent.kind, status: formatConfigStatus(agent.status, agent.runtime?.substate) })),
+    ...Object.values(state.teams).map((team) => ({ id: team.id, label: team.label, kind: team.kind, status: formatConfigStatus(team.status, team.runtime?.substate) })),
+    ...Object.values(state.tasks).map((task) => ({ id: task.id, label: task.title, kind: 'task', status: formatConfigStatus(task.status, task.substate) })),
   ].sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
+}
+
+function formatConfigStatus(status: string, substate?: string): string {
+  return substate ? `${status}/${substate}` : status;
 }
 
 function renderZergControlStatus(state: ZergState, width: number): string {
@@ -1406,6 +1603,9 @@ function renderZergControlStatus(state: ZergState, width: number): string {
   const latestAudit = control.auditLog?.at(-1)?.message ?? 'none';
   const permissionQueue = getPermissionQueueState(state);
   const latestPermission = getPendingPermissionRequests(state).at(-1);
+  const activeRun = control.activeRunId ? state.agents[control.activeRunId] : undefined;
+  const activeRunSubstate = activeRun?.runtime?.substate ? ` [${activeRun.status}/${activeRun.runtime.substate}]` : '';
+  const activeRunReason = activeRun?.runtime?.substateReason ? ` ${activeRun.runtime.substateReason}` : '';
   return [
     'zerg control',
     `controller: ${control.controller}`,
@@ -1413,7 +1613,7 @@ function renderZergControlStatus(state: ZergState, width: number): string {
     `read-only: ${readOnly}`,
     `permissions: ${permissionQueue.pendingCount} pending${latestPermission ? ` latest:${latestPermission.id} ${latestPermission.kind} ${latestPermission.summary}` : ''}`,
     `selected target: ${control.selectedTargetId ?? 'none'}`,
-    `active run: ${control.activeRunId ?? 'none'}`,
+    `active run: ${control.activeRunId ?? 'none'}${activeRunSubstate}${activeRunReason}`,
     `adapter: Pi slash bridge when available; commands /zerg run and /zerg interrupt`,
     `latest audit: ${latestAudit}`,
   ].map((line) => line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line).join('\n');
@@ -1511,7 +1711,7 @@ function createPiSlashBridgeAdapter(
     });
   };
 
-  const updatePendingRun = (runId: string, status?: AgentStatus, eventTimestamp = resolveTimestamp(), activity?: string): void => {
+  const updatePendingRun = (runId: string, status?: AgentStatus, eventTimestamp = resolveTimestamp(), activity?: string, substate?: ZergLifecycleSubstate, substateReason?: string): void => {
     const pending = runsById.get(runId);
     if (!pending) {
       return;
@@ -1524,6 +1724,15 @@ function createPiSlashBridgeAdapter(
 
     if (status === 'running' && !pending.startedAt) {
       pending.startedAt = eventTimestamp;
+    }
+
+    if (substate) {
+      pending.substate = substate;
+      pending.substateUpdatedAt = eventTimestamp;
+    }
+
+    if (substateReason) {
+      pending.substateReason = substateReason;
     }
 
     if (activity) {
@@ -1541,33 +1750,41 @@ function createPiSlashBridgeAdapter(
         pending.started = true;
       }
 
-      updatePendingRun(requestId, 'running', resolveTimestamp(), getSubagentRunSnapshot(container.read(), requestId)?.task);
+      updatePendingRun(requestId, 'running', resolveTimestamp(), getSubagentRunSnapshot(container.read(), requestId)?.task, 'starting', 'bridge started');
       const snapshot = updateZergControlState(container, { activeRunId: requestId }, `subagent ${requestId} started`, options);
-      container.replace(applyRuntimeTransition(snapshot, {
+      const started = applyRuntimeTransition(snapshot, {
         entity: 'agent',
         action: 'start',
         id: requestId,
         label: pending?.agentLabel ?? pending?.agentId ?? requestId,
         kind: 'subagent',
         activity: pending?.task,
-      }, { now: options.now ?? (() => new Date()) }));
+        substate: 'starting',
+        substateReason: 'bridge started',
+      }, { now: options.now ?? (() => new Date()) });
+      container.replace(updateRunTaskLifecycle(started, pending?.taskId, 'running', 'starting', 'bridge started', resolveTimestamp()));
     }),
     subscribePiEvent(events, SLASH_SUBAGENT_UPDATE_EVENT, (data) => {
       const requestId = getEventRequestId(data);
       if (!requestId) return;
 
-      const currentTool = data && typeof data === 'object' && typeof (data as { currentTool?: unknown }).currentTool === 'string'
+      const hasCurrentTool = data && typeof data === 'object' && typeof (data as { currentTool?: unknown }).currentTool === 'string';
+      const currentTool = hasCurrentTool
         ? (data as { currentTool: string }).currentTool
         : 'progress';
-      updatePendingRun(requestId, 'running', resolveTimestamp(), currentTool);
+      const substate: ZergLifecycleSubstate = hasCurrentTool ? 'tool-running' : 'executing';
+      const pending = runsById.get(requestId);
+      updatePendingRun(requestId, 'running', resolveTimestamp(), currentTool, substate, hasCurrentTool ? currentTool : undefined);
       const snapshot = applyRuntimeTransition(container.read(), {
         entity: 'agent',
         action: 'progress',
         id: requestId,
         kind: 'subagent',
         activity: currentTool,
+        substate,
+        substateReason: hasCurrentTool ? currentTool : undefined,
       }, { now: options.now ?? (() => new Date()) });
-      container.replace(snapshot);
+      container.replace(updateRunTaskLifecycle(snapshot, pending?.taskId, 'running', substate, hasCurrentTool ? currentTool : undefined, resolveTimestamp()));
     }),
     subscribePiEvent(events, SLASH_SUBAGENT_RESPONSE_EVENT, (data) => {
       const requestId = getEventRequestId(data);
@@ -1578,7 +1795,7 @@ function createPiSlashBridgeAdapter(
       const pending = runsById.get(requestId);
       if (pending) {
         pending.completed = true;
-        updatePendingRun(requestId, status, resolveTimestamp(), isError ? 'subagent failed' : 'subagent complete');
+        updatePendingRun(requestId, status, resolveTimestamp(), isError ? 'subagent failed' : 'subagent complete', isError ? 'failed' : 'completed', isError ? 'subagent failed' : 'subagent complete');
       }
 
       const snapshot = applyRuntimeTransition(container.read(), {
@@ -1588,8 +1805,10 @@ function createPiSlashBridgeAdapter(
         label: pending?.agentId ?? requestId,
         kind: 'subagent',
         activity: isError ? 'subagent failed' : 'subagent complete',
+        substate: isError ? 'failed' : 'completed',
+        substateReason: isError ? 'subagent failed' : 'subagent complete',
       }, { now: options.now ?? (() => new Date()) });
-      container.replace(snapshot);
+      container.replace(updateRunTaskLifecycle(snapshot, pending?.taskId, isError ? 'failed' : 'done', isError ? 'failed' : 'completed', isError ? 'subagent failed' : 'subagent complete', resolveTimestamp()));
       if (pending?.launched) {
         runsById.delete(requestId);
       }
@@ -1629,6 +1848,9 @@ function createPiSlashBridgeAdapter(
         status: 'idle',
         taskId,
         launchMode,
+        substate: 'spawning',
+        substateReason: 'bridge request emitted',
+        substateUpdatedAt: now,
         updatedAt: now,
         startedAt: undefined,
         metadata: launchMetadata,
@@ -1645,6 +1867,8 @@ function createPiSlashBridgeAdapter(
           label: agentLabel ?? request.agent,
           kind: 'subagent',
           activity: request.task,
+          substate: 'spawning',
+          substateReason: 'bridge request emitted',
         }, { now: options.now ?? (() => new Date()) });
 
         const created = before.agents[requestId];
@@ -1714,6 +1938,8 @@ function createPiSlashBridgeAdapter(
             label: request.agent,
             kind: 'subagent',
             activity: 'No pi-subagents slash bridge responded.',
+            substate: 'failed',
+            substateReason: 'No pi-subagents slash bridge responded.',
           }, { now: options.now ?? (() => new Date()) });
           container.replace(failed);
         }
@@ -1735,7 +1961,17 @@ function createPiSlashBridgeAdapter(
         return { ok: false, message: 'No active zerg subagent run to interrupt.' };
       }
       events.emit!(SLASH_SUBAGENT_CANCEL_EVENT, { requestId: target });
-      updateZergControlState(container, { activeRunId: target }, `interrupt requested for ${target}`, options);
+      const snapshot = updateZergControlState(container, { activeRunId: target }, `interrupt requested for ${target}`, options);
+      container.replace(applyRuntimeTransition(snapshot, {
+        entity: 'agent',
+        action: 'progress',
+        id: target,
+        kind: 'subagent',
+        status: 'running',
+        activity: 'interrupt requested',
+        substate: 'cancelling',
+        substateReason: 'interrupt requested',
+      }, { now: options.now ?? (() => new Date()) }));
       return { ok: true, runId: target, message: `interrupt requested for ${target}` };
     },
     dispose() {
@@ -1797,10 +2033,13 @@ function renderZergConfigOverlay(
     }
   } else {
     const control = getZergControlState(state);
+    const activeRun = control.activeRunId ? state.agents[control.activeRunId] : undefined;
+    const activeRunSubstate = activeRun?.runtime?.substate ? ` [${activeRun.status}/${activeRun.runtime.substate}]` : '';
     lines.push('configuration:');
     lines.push(`  controller: ${control.controller} (command: /zerg control controller pi|zerg|operator)`);
     lines.push(`  automation: ${state.mode.automation} (keys: m manual, a assisted, u automatic)`);
     lines.push(`  read-only: ${state.mode.readOnly ? 'enabled' : 'disabled'} (key: r)`);
+    lines.push(`  active run: ${control.activeRunId ?? 'none'}${activeRunSubstate}`);
     const latestPermission = getPendingPermissionRequests(state).at(-1);
     lines.push(`  permissions: ${getPermissionQueueState(state).pendingCount} pending${latestPermission ? ` latest:${latestPermission.id} ${latestPermission.kind} ${latestPermission.summary}` : ''} (command: /zerg permission status)`);
     lines.push('  Pi adapter: /zerg run emits pi-subagents slash bridge events when available');

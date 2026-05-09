@@ -1,6 +1,7 @@
-import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentDefinition, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergPermissionDecision, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergPermissionRequester, type ZergPermissionRequestKind, type ZergPermissionRequestStatus, type ZergPermissionResolver, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStateListener, type ZergStatePatch, type ZergStateUpdateOptions, type ZergSubagentRunSnapshot, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
+import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentDefinition, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergPermissionDecision, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergPermissionRequester, type ZergPermissionRequestKind, type ZergPermissionRequestStatus, type ZergPermissionResolver, type ZergLifecycleSubstate, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStateListener, type ZergStatePatch, type ZergStateUpdateOptions, type ZergSubagentRunSnapshot, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
 
 const DEFAULT_TIMESTAMP = '1970-01-01T00:00:00.000Z';
+const MAX_LIFECYCLE_SUBSTATE_REASON_LENGTH = 160;
 
 const DEFAULT_MODE: PermissionModeState = {
   automation: 'manual',
@@ -52,6 +53,9 @@ export function createZergSubagentRunSnapshot(run: ZergSubagentRunSnapshot): Zer
     status: run.status,
     taskId: run.taskId,
     launchMode: run.launchMode,
+    substate: run.substate,
+    substateReason: run.substateReason,
+    substateUpdatedAt: run.substateUpdatedAt,
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
     metadata: cloneOptional(run.metadata, cloneExtensionFields),
@@ -662,6 +666,8 @@ export function applyRuntimeTransition(
     const status = resolveTransitionStatus(base, transition);
     const health = resolveTransitionHealth(base, transition);
     const activity = transition.activity?.trim() || defaultRuntimeActivity(transition.action);
+    const substate = resolveTransitionSubstate(transition, activity);
+    const substateReason = sanitizeLifecycleSubstateReason(transition.substateReason);
     const runtime = buildRuntimeState(
       getExistingRuntime(base, transition),
       transition,
@@ -670,6 +676,8 @@ export function applyRuntimeTransition(
       health,
       activity,
       revision,
+      substate,
+      substateReason,
     );
     const event: HookLifecycleEvent = {
       id: `runtime-${revision}`,
@@ -678,6 +686,8 @@ export function applyRuntimeTransition(
       status,
       action: transition.action,
       health,
+      substate,
+      substateReason,
       mode,
       sequence: revision,
       revision,
@@ -816,6 +826,8 @@ function buildRuntimeState(
   health: ZergRuntimeHealth,
   activity: string,
   activitySequence: number,
+  substate: ZergLifecycleSubstate,
+  substateReason: string | undefined,
 ): ZergRuntimeState {
   const createdAt = existing?.createdAt ?? timestamp;
   const activityMetadata = {
@@ -823,6 +835,9 @@ function buildRuntimeState(
     lastActivityAt: timestamp,
     lastActivitySequence: activitySequence,
     lastActivityRevision: activitySequence,
+    substate,
+    substateReason,
+    substateUpdatedAt: timestamp,
   } as const;
 
   if (transition.action === 'reset') {
@@ -894,6 +909,72 @@ function formatRuntimeEventMessage(transition: ZergRuntimeTransition, activity: 
   return `${transition.entity} ${transition.id} ${transition.action}: ${activity}`;
 }
 
+function resolveTransitionSubstate(transition: ZergRuntimeTransition, activity: string): ZergLifecycleSubstate {
+  if (isLifecycleSubstate(transition.substate)) {
+    return transition.substate;
+  }
+
+  if (transition.action === 'progress') {
+    return inferLifecycleSubstateFromActivity(activity, 'executing');
+  }
+
+  switch (transition.action) {
+    case 'create':
+      return 'queued';
+    case 'start':
+      return 'starting';
+    case 'stop':
+      return 'completed';
+    case 'fail':
+      return 'failed';
+    case 'reset':
+      return 'reset';
+  }
+}
+
+function inferLifecycleSubstateFromActivity(activity: string, fallback: ZergLifecycleSubstate): ZergLifecycleSubstate {
+  const normalized = activity.toLowerCase();
+  if (normalized.includes('permission')) return 'waiting-permission';
+  if (normalized.includes('input')) return 'waiting-input';
+  if (normalized.includes('compact')) return 'compacting';
+  if (normalized.includes('stream')) return 'streaming-output';
+  if (normalized.includes('tool')) return 'tool-running';
+  return fallback;
+}
+
+function isLifecycleSubstate(value: unknown): value is ZergLifecycleSubstate {
+  return value === 'queued'
+    || value === 'spawning'
+    || value === 'starting'
+    || value === 'planning'
+    || value === 'waiting-permission'
+    || value === 'waiting-input'
+    || value === 'executing'
+    || value === 'tool-running'
+    || value === 'streaming-output'
+    || value === 'compacting'
+    || value === 'idle'
+    || value === 'stopping'
+    || value === 'cancelling'
+    || value === 'completed'
+    || value === 'failed'
+    || value === 'reset';
+}
+
+function sanitizeLifecycleSubstateReason(reason: string | undefined): string | undefined {
+  if (reason === undefined) {
+    return undefined;
+  }
+
+  const sanitized = reason
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_LIFECYCLE_SUBSTATE_REASON_LENGTH);
+
+  return sanitized || undefined;
+}
+
 function defaultRuntimeActivity(action: ZergRuntimeTransition['action']): string {
   switch (action) {
     case 'create':
@@ -960,6 +1041,7 @@ function cloneSubagentRunSnapshot(run: ZergSubagentRunSnapshot): ZergSubagentRun
 
 function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
   const runtimeTask = agent.runtime?.lastActivity;
+  const runtime = agent.runtime;
   const metadata = agent.metadata;
   const taskId = typeof metadata?.taskId === 'string' ? metadata.taskId : undefined;
   const launchMode = metadata?.launchMode === 'fork' || metadata?.launchMode === 'fresh' ? metadata.launchMode : undefined;
@@ -971,8 +1053,11 @@ function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
     task: runtimeTask,
     taskId,
     launchMode,
-    startedAt: agent.runtime?.startedAt,
-    updatedAt: agent.runtime?.updatedAt,
+    substate: runtime?.substate,
+    substateReason: runtime?.substateReason,
+    substateUpdatedAt: runtime?.substateUpdatedAt,
+    startedAt: runtime?.startedAt,
+    updatedAt: runtime?.updatedAt,
     metadata: cloneOptional(metadata, cloneExtensionFields),
   };
 }
