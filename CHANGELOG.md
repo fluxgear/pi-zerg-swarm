@@ -7,6 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-rc.9] - 2026-05-11
+
+### Added
+
+- Added typed structured log contracts for `ZergLogLevel`, `ZergLogSource`, `ZergOutputKind`, `ZergLogRecord`, and `ZergLogState`.
+- Added bounded structured log state under `state.extensions.zergLogs` with clone-safe helpers for appending records, appending batches, reading filtered records, max-record trimming, and JSON-safe structured data sanitization.
+- Added `/zerg logs status|list|show|json` command surfaces with `--run`, `--level`, `--limit`, and `--json` support for stable text and parseable JSON inspection.
+- Added command, lifecycle, permission, adapter, Pi slash-bridge, run, and interrupt log integration using verified fields only.
+- Added monitor, control, config, and help rendering for structured log counts and latest warning/error summaries.
+- Added regression coverage for log helper cloning/trimming/sanitization, cyclic and unsupported data handling, BigInt JSON safety, log command filters, JSON parsing, bridge tool/text/error/result update logs, and render immutability.
+
+### Changed
+
+- Kept logs in bounded in-memory extension state; no persistent filesystem logs, telemetry, or unbounded raw output storage were added.
+- Bumped package manifest versions from `1.0.0-rc.8` to `1.0.0-rc.9` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, and matching tests from `v1.0.0-rc.8` to `v1.0.0-rc.9`.
+
+### Known Limitations
+
+- External Pi log/output event integration remains limited to verified slash-bridge event fields; private Pi event payloads are not guessed.
+- `/zerg logs clear` is not implemented; log deletion/retention policy beyond bounded in-memory trimming remains future scope.
+- Structured logs are in-memory extension state and are not durable across process restarts.
+
 ## [1.0.0-rc.8] - 2026-05-09
 
 ### Added

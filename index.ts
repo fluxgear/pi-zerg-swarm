@@ -1,7 +1,7 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
-import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderPermissionQueueStatus, renderStatusLine, renderZergSubagentRunList, renderZergSubagentRunSummary } from './render.js';
-import { applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, readSharedZergState, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertTask } from './state.js';
+import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderPermissionQueueStatus, renderStatusLine, renderZergLogList, renderZergLogStatus, renderZergLogSummary, renderZergSubagentRunList, renderZergSubagentRunSummary } from './render.js';
+import { appendZergLogRecord, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, getZergLogs, getZergLogState, readSharedZergState, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertTask, type ZergLogFilter } from './state.js';
 import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
 
 type ZergIdFactory = {
@@ -31,9 +31,10 @@ export interface ZergExtensionRegistration {
   dispose(): void;
 }
 
-type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene' | 'monitor' | 'control' | 'config' | 'run' | 'interrupt' | 'agents' | 'runs' | 'permission';
+type ZergCommandTopic = 'help' | 'status' | 'tree' | 'steps' | 'agent' | 'team' | 'mode' | 'intervene' | 'monitor' | 'control' | 'config' | 'run' | 'interrupt' | 'agents' | 'runs' | 'permission' | 'logs';
 type ZergCommandDispatcher = (payload: string) => ZergCommandResult;
 type RuntimeParseResult = { ok: false; output: string } | { ok: true; transition: ZergRuntimeTransition };
+type LogsParseResult = { ok: false; output: string } | { ok: true; filter: ZergLogFilter; json: boolean };
 
 type ModeTransitionAction = 'status' | 'manual' | 'assisted' | 'automatic' | 'revert';
 type ModeParseResult =
@@ -148,8 +149,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.8 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.8 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.9 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.9 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -249,6 +250,7 @@ export function createZergCommandHandler(
     monitor: (payload: string) => dispatchMonitorCommand(stateOrReader, payload, options),
     control: (payload: string) => dispatchControlCommand(stateOrReader, payload, options),
     permission: (payload: string) => dispatchPermissionCommand(stateOrReader, payload, options),
+    logs: (payload: string) => dispatchLogsCommand(stateOrReader, payload),
     config: () => ({ ok: true, output: renderZergConfigOverlay(resolveZergStateSnapshot(stateOrReader), { width: PI_COMMAND_OUTPUT_WIDTH, activeTab: 'config', selectedIndex: 0 }) }),
     run: (payload: string) => dispatchRunCommand(stateOrReader, payload, options),
     runs: (payload: string) => dispatchRunsCommand(stateOrReader, payload, options),
@@ -311,7 +313,7 @@ function isZergInvocationToken(value: string): value is ZergCommandName {
 }
 
 function isZergCommandTopic(value: string): value is ZergCommandTopic {
-  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agents' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene' || value === 'monitor' || value === 'control' || value === 'permission' || value === 'config' || value === 'run' || value === 'runs' || value === 'interrupt';
+  return value === 'help' || value === 'status' || value === 'tree' || value === 'steps' || value === 'agents' || value === 'agent' || value === 'team' || value === 'mode' || value === 'intervene' || value === 'monitor' || value === 'control' || value === 'permission' || value === 'logs' || value === 'config' || value === 'run' || value === 'runs' || value === 'interrupt';
 }
 
 function dispatchAgentDefinitionsCommand(
@@ -378,7 +380,16 @@ function dispatchRuntimeCommand(
   const nextState = applyRuntimeTransition(container.read(), parsed.transition, {
     now: options.now ?? (() => new Date()),
   });
-  const snapshot = container.replace(nextState);
+  const withLog = appendLogToState(nextState, options, {
+    source: 'lifecycle',
+    level: parsed.transition.action === 'fail' ? 'error' : 'info',
+    kind: parsed.transition.action === 'fail' ? 'error' : 'text',
+    message: `${parsed.transition.entity} ${parsed.transition.id} ${parsed.transition.action}`,
+    agentId: parsed.transition.entity === 'agent' ? parsed.transition.id : undefined,
+    teamId: parsed.transition.entity === 'team' ? parsed.transition.id : undefined,
+    data: { action: parsed.transition.action },
+  });
+  const snapshot = container.replace(withLog);
 
   if (options.syncSharedState) {
     replaceSharedZergState(snapshot);
@@ -602,7 +613,16 @@ function dispatchPermissionCommand(
       requester: 'operator',
       summary: sanitizedSummary,
     }, { now: options.now ?? (() => new Date()) });
-    const next = container.replace(queued);
+    const logged = appendLogToState(queued, options, {
+      source: 'permission',
+      level: 'info',
+      kind: 'text',
+      message: `permission request queued for ${kind} ${target}`,
+      agentId: kind === 'run' || kind === 'interrupt' ? target : undefined,
+      runId: kind === 'interrupt' ? target : undefined,
+      data: { permissionKind: kind },
+    });
+    const next = container.replace(logged);
     if (options.syncSharedState) {
       replaceSharedZergState(next);
     }
@@ -635,7 +655,16 @@ function dispatchPermissionCommand(
     const withLifecycle = decision === 'deny' || decision === 'cancel'
       ? markPermissionRequestTerminalLifecycle(resolved, request.runId, decision, options)
       : resolved;
-    const next = container.replace(withLifecycle);
+    const logged = appendLogToState(withLifecycle, options, {
+      source: 'permission',
+      level: decision === 'approve' ? 'info' : 'warn',
+      kind: decision === 'approve' ? 'text' : 'error',
+      message: `permission ${decision}: ${requestId}`,
+      runId: request.runId,
+      agentId: request.agentId,
+      data: { permissionKind: request.kind, decision },
+    });
+    const next = container.replace(logged);
     if (options.syncSharedState) {
       replaceSharedZergState(next);
     }
@@ -643,6 +672,67 @@ function dispatchPermissionCommand(
   }
 
   return { ok: false, output: `Unknown permission action: ${tokens[0] ?? ''}` };
+}
+
+function dispatchLogsCommand(
+  stateOrReader: ZergStateSource,
+  payload: string,
+): ZergCommandResult {
+  const tokens = tokenizeRuntimePayload(payload);
+  const action = tokens[0]?.toLowerCase() ?? 'status';
+  const snapshot = resolveZergStateSnapshot(stateOrReader);
+
+  if (action === 'status') {
+    return { ok: true, output: renderZergLogStatus(getZergLogState(snapshot), { width: PI_COMMAND_OUTPUT_WIDTH }) };
+  }
+
+  if (action === 'list' || action === 'ls') {
+    const parsed = parseLogFilters(tokens.slice(1));
+    if (!parsed.ok) {
+      return parsed;
+    }
+
+    return { ok: true, output: renderZergLogList(getZergLogs(snapshot, parsed.filter), { width: PI_COMMAND_OUTPUT_WIDTH }) };
+  }
+
+  if (action === 'json') {
+    const parsed = parseLogFilters(tokens.slice(1));
+    if (!parsed.ok) {
+      return parsed;
+    }
+
+    const records = getZergLogs(snapshot, parsed.filter);
+    return { ok: true, output: JSON.stringify({ count: records.length, records }, null, 2) };
+  }
+
+  if (action === 'show') {
+    const id = tokens[1];
+    if (!id) {
+      return { ok: false, output: 'Usage: /zerg logs show <id|run-id> [--json]' };
+    }
+
+    const parsed = parseLogFilters(tokens.slice(2));
+    if (!parsed.ok) {
+      return parsed;
+    }
+
+    const records = getZergLogState(snapshot).records;
+    const exact = records.find((record) => record.id === id);
+    const matches = exact ? [exact] : records.filter((record) => record.runId === id);
+    if (matches.length === 0) {
+      return { ok: false, output: `Unknown log or run: ${id}` };
+    }
+
+    if (parsed.json) {
+      return { ok: true, output: JSON.stringify({ count: matches.length, records: matches }, null, 2) };
+    }
+
+    return exact
+      ? { ok: true, output: renderZergLogSummary(exact, { width: PI_COMMAND_OUTPUT_WIDTH }) }
+      : { ok: true, output: renderZergLogList(matches.slice(-(parsed.filter.limit ?? 20)), { width: PI_COMMAND_OUTPUT_WIDTH }) };
+  }
+
+  return { ok: false, output: `Unknown logs action: ${tokens[0] ?? ''}` };
 }
 
 function dispatchRunCommand(
@@ -683,7 +773,15 @@ function dispatchRunCommand(
         background: parsed.request.background,
       },
     }, { now: options.now ?? (() => new Date()) });
-    const snapshot = container.replace(queued);
+    const logged = appendLogToState(queued, options, {
+      source: 'permission',
+      level: 'warn',
+      kind: 'text',
+      message: `read-only blocked zerg run for ${resolvedDefinition?.id ?? parsed.request.agent}`,
+      agentId: resolvedDefinition?.id ?? parsed.request.agent,
+      data: { launchMode, background: parsed.request.background },
+    });
+    const snapshot = container.replace(logged);
     if (options.syncSharedState) {
       replaceSharedZergState(snapshot);
     }
@@ -763,7 +861,18 @@ function dispatchRunCommand(
     },
   };
 
-  const launchReadyState = container.replace(withAgentMetadata);
+  const withLaunchLog = appendLogToState(withAgentMetadata, options, {
+    source: 'command',
+    level: 'info',
+    kind: 'text',
+    message: `zerg run queued for ${resolvedAgentId}`,
+    runId,
+    agentId: resolvedAgentId,
+    taskId,
+    data: { launchMode, background: parsed.request.background },
+  });
+
+  const launchReadyState = container.replace(withLaunchLog);
   if (options.syncSharedState) {
     replaceSharedZergState(launchReadyState);
   }
@@ -771,6 +880,19 @@ function dispatchRunCommand(
   const result = adapter.launch(request);
 
   if (result.ok) {
+    const logged = appendLogToContainer(container, options, {
+      source: 'adapter',
+      level: 'info',
+      kind: 'text',
+      message: result.message || `adapter launch accepted ${runId}`,
+      runId,
+      agentId: resolvedAgentId,
+      taskId,
+      data: { launchMode },
+    });
+    if (options.syncSharedState) {
+      replaceSharedZergState(logged);
+    }
     return {
       ok: true,
       runId,
@@ -803,7 +925,16 @@ function dispatchRunCommand(
     },
   );
 
-  const failedState = container.replace(withFailure);
+  const failedState = container.replace(appendLogToState(withFailure, options, {
+    source: 'adapter',
+    level: 'error',
+    kind: 'error',
+    message: result.message || 'adapter launch failed',
+    runId,
+    agentId: resolvedAgentId,
+    taskId,
+    data: { launchMode },
+  }));
   if (options.syncSharedState) {
     replaceSharedZergState(failedState);
   }
@@ -884,7 +1015,13 @@ function dispatchInterruptCommand(
     const waiting = targetRunId && queued.agents[targetRunId]
       ? markRunWaitingForPermission(queued, targetRunId, requestId, options)
       : queued;
-    const snapshot = container.replace(waiting);
+    const snapshot = container.replace(appendLogToState(waiting, options, {
+      source: 'permission',
+      level: 'warn',
+      kind: 'text',
+      message: `read-only blocked zerg interrupt for ${targetRunId ?? 'active run'}`,
+      runId: targetRunId,
+    }));
     if (options.syncSharedState) {
       replaceSharedZergState(snapshot);
     }
@@ -913,7 +1050,13 @@ function dispatchInterruptCommand(
         substate: 'cancelling',
         substateReason: result.message,
       }, { now: options.now ?? (() => new Date()) });
-      const snapshot = container.replace(interrupted);
+      const snapshot = container.replace(appendLogToState(interrupted, options, {
+        source: 'command',
+        level: result.ok ? 'warn' : 'error',
+        kind: result.ok ? 'text' : 'error',
+        message: result.message,
+        runId: targetRunId,
+      }));
       if (options.syncSharedState) {
         replaceSharedZergState(snapshot);
       }
@@ -1015,6 +1158,65 @@ function parseRunCommand(payload: string): { ok: false; output: string } | { ok:
   }
 
   return { ok: true, request: { agent, task, background, fork: launchMode === 'fork', launchMode } };
+}
+
+function parseLogFilters(tokens: string[]): LogsParseResult {
+  const filter: ZergLogFilter = {};
+  let json = false;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const lower = token.toLowerCase();
+
+    if (lower === '--json') {
+      json = true;
+    } else if (lower === '--run') {
+      const value = tokens[index + 1];
+      if (!value) {
+        return { ok: false, output: 'Usage: --run <id>' };
+      }
+      filter.runId = normalizeLogFilterText(value);
+      index += 1;
+    } else if (lower.startsWith('--run=')) {
+      const value = token.slice('--run='.length);
+      if (!value) {
+        return { ok: false, output: 'Usage: --run <id>' };
+      }
+      filter.runId = normalizeLogFilterText(value);
+    } else if (lower === '--level') {
+      const value = tokens[index + 1]?.toLowerCase();
+      if (!isZergLogLevel(value)) {
+        return { ok: false, output: `Unknown log level: ${tokens[index + 1] ?? ''}` };
+      }
+      filter.level = value;
+      index += 1;
+    } else if (lower.startsWith('--level=')) {
+      const value = token.slice('--level='.length).toLowerCase();
+      if (!isZergLogLevel(value)) {
+        return { ok: false, output: `Unknown log level: ${token.slice('--level='.length)}` };
+      }
+      filter.level = value;
+    } else if (lower === '--limit') {
+      const value = tokens[index + 1];
+      const limit = parseLogLimit(value);
+      if (limit === undefined) {
+        return { ok: false, output: `Invalid log limit: ${value ?? ''}` };
+      }
+      filter.limit = limit;
+      index += 1;
+    } else if (lower.startsWith('--limit=')) {
+      const value = token.slice('--limit='.length);
+      const limit = parseLogLimit(value);
+      if (limit === undefined) {
+        return { ok: false, output: `Invalid log limit: ${value}` };
+      }
+      filter.limit = limit;
+    } else {
+      return { ok: false, output: `Unknown logs filter: ${token}` };
+    }
+  }
+
+  return { ok: true, filter, json };
 }
 
 function parseModeCommand(payload: string): ModeParseResult {
@@ -1285,6 +1487,23 @@ function normalizePermissionCommandText(input: string): string {
     .trim();
 }
 
+function normalizeLogFilterText(input: string): string {
+  return normalizePermissionCommandText(input).slice(0, 160);
+}
+
+function parseLogLimit(value: string | undefined): number | undefined {
+  if (!value || !/^\d+$/.test(value)) {
+    return undefined;
+  }
+
+  const limit = Number(value);
+  return Number.isSafeInteger(limit) && limit > 0 ? limit : undefined;
+}
+
+function isZergLogLevel(value: string | undefined): value is NonNullable<ZergLogFilter['level']> {
+  return value === 'debug' || value === 'info' || value === 'warn' || value === 'error';
+}
+
 function isRuntimeAction(value: string | undefined): value is ZergRuntimeTransitionAction {
   return value === 'create' || value === 'start' || value === 'progress' || value === 'stop' || value === 'fail' || value === 'reset';
 }
@@ -1328,6 +1547,22 @@ function permissionPastTense(decision: ZergPermissionDecision): string {
       : decision === 'cancel'
         ? 'cancelled'
         : 'expired';
+}
+
+function appendLogToState(
+  state: ZergState,
+  _options: RuntimeCommandOptions,
+  input: Parameters<typeof appendZergLogRecord>[1],
+): ZergState {
+  return appendZergLogRecord(state, input);
+}
+
+function appendLogToContainer(
+  container: ZergStateContainer,
+  options: RuntimeCommandOptions,
+  input: Parameters<typeof appendZergLogRecord>[1],
+): ZergState {
+  return container.replace(appendLogToState(container.read(), options, input));
 }
 
 function updateRunTaskLifecycle(
@@ -1603,6 +1838,8 @@ function renderZergControlStatus(state: ZergState, width: number): string {
   const latestAudit = control.auditLog?.at(-1)?.message ?? 'none';
   const permissionQueue = getPermissionQueueState(state);
   const latestPermission = getPendingPermissionRequests(state).at(-1);
+  const logState = getZergLogState(state);
+  const latestLogWarning = logState.records.filter((record) => record.level === 'warn' || record.level === 'error').at(-1);
   const activeRun = control.activeRunId ? state.agents[control.activeRunId] : undefined;
   const activeRunSubstate = activeRun?.runtime?.substate ? ` [${activeRun.status}/${activeRun.runtime.substate}]` : '';
   const activeRunReason = activeRun?.runtime?.substateReason ? ` ${activeRun.runtime.substateReason}` : '';
@@ -1612,6 +1849,7 @@ function renderZergControlStatus(state: ZergState, width: number): string {
     `mode: ${state.mode.automation}`,
     `read-only: ${readOnly}`,
     `permissions: ${permissionQueue.pendingCount} pending${latestPermission ? ` latest:${latestPermission.id} ${latestPermission.kind} ${latestPermission.summary}` : ''}`,
+    `logs: ${logState.records.length}/${logState.maxRecords}${latestLogWarning ? ` latest:${latestLogWarning.id} ${latestLogWarning.level} ${latestLogWarning.message}` : ''}`,
     `selected target: ${control.selectedTargetId ?? 'none'}`,
     `active run: ${control.activeRunId ?? 'none'}${activeRunSubstate}${activeRunReason}`,
     `adapter: Pi slash bridge when available; commands /zerg run and /zerg interrupt`,
@@ -1763,6 +2001,15 @@ function createPiSlashBridgeAdapter(
         substateReason: 'bridge started',
       }, { now: options.now ?? (() => new Date()) });
       container.replace(updateRunTaskLifecycle(started, pending?.taskId, 'running', 'starting', 'bridge started', resolveTimestamp()));
+      appendLogToContainer(container, options, {
+        source: 'adapter',
+        level: 'info',
+        kind: 'text',
+        message: `bridge started ${requestId}`,
+        runId: requestId,
+        agentId: pending?.agentId,
+        taskId: pending?.taskId,
+      });
     }),
     subscribePiEvent(events, SLASH_SUBAGENT_UPDATE_EVENT, (data) => {
       const requestId = getEventRequestId(data);
@@ -1773,6 +2020,7 @@ function createPiSlashBridgeAdapter(
         ? (data as { currentTool: string }).currentTool
         : 'progress';
       const substate: ZergLifecycleSubstate = hasCurrentTool ? 'tool-running' : 'executing';
+      const bridgeLog = parseBridgeUpdateLog(data, hasCurrentTool ? currentTool : undefined);
       const pending = runsById.get(requestId);
       updatePendingRun(requestId, 'running', resolveTimestamp(), currentTool, substate, hasCurrentTool ? currentTool : undefined);
       const snapshot = applyRuntimeTransition(container.read(), {
@@ -1785,6 +2033,16 @@ function createPiSlashBridgeAdapter(
         substateReason: hasCurrentTool ? currentTool : undefined,
       }, { now: options.now ?? (() => new Date()) });
       container.replace(updateRunTaskLifecycle(snapshot, pending?.taskId, 'running', substate, hasCurrentTool ? currentTool : undefined, resolveTimestamp()));
+      appendLogToContainer(container, options, {
+        source: 'adapter',
+        level: bridgeLog.level,
+        kind: bridgeLog.kind,
+        message: bridgeLog.message,
+        runId: requestId,
+        agentId: pending?.agentId,
+        taskId: pending?.taskId,
+        data: bridgeLog.data,
+      });
     }),
     subscribePiEvent(events, SLASH_SUBAGENT_RESPONSE_EVENT, (data) => {
       const requestId = getEventRequestId(data);
@@ -1809,6 +2067,15 @@ function createPiSlashBridgeAdapter(
         substateReason: isError ? 'subagent failed' : 'subagent complete',
       }, { now: options.now ?? (() => new Date()) });
       container.replace(updateRunTaskLifecycle(snapshot, pending?.taskId, isError ? 'failed' : 'done', isError ? 'failed' : 'completed', isError ? 'subagent failed' : 'subagent complete', resolveTimestamp()));
+      appendLogToContainer(container, options, {
+        source: 'adapter',
+        level: isError ? 'error' : 'info',
+        kind: isError ? 'error' : 'result',
+        message: isError ? 'subagent failed' : 'subagent complete',
+        runId: requestId,
+        agentId: pending?.agentId,
+        taskId: pending?.taskId,
+      });
       if (pending?.launched) {
         runsById.delete(requestId);
       }
@@ -1908,6 +2175,17 @@ function createPiSlashBridgeAdapter(
         }
       }
 
+      appendLogToContainer(container, options, {
+        source: 'adapter',
+        level: 'info',
+        kind: 'text',
+        message: `bridge request emitted for ${requestId}`,
+        runId: requestId,
+        agentId: request.agent,
+        taskId,
+        data: { launchMode, background: request.background === true },
+      });
+
       events.emit!(SLASH_SUBAGENT_REQUEST_EVENT, {
         requestId,
         params: {
@@ -1941,7 +2219,16 @@ function createPiSlashBridgeAdapter(
             substate: 'failed',
             substateReason: 'No pi-subagents slash bridge responded.',
           }, { now: options.now ?? (() => new Date()) });
-          container.replace(failed);
+          container.replace(appendLogToState(failed, options, {
+            source: 'adapter',
+            level: 'error',
+            kind: 'error',
+            message: 'No pi-subagents slash bridge responded.',
+            runId: requestId,
+            agentId: request.agent,
+            taskId,
+            data: { launchMode },
+          }));
         }
         return {
           ok: false,
@@ -1953,6 +2240,16 @@ function createPiSlashBridgeAdapter(
 
       run.launched = true;
       updateZergControlState(container, { activeRunId: requestId }, `launched ${request.agent}`, options);
+      appendLogToContainer(container, options, {
+        source: 'adapter',
+        level: 'info',
+        kind: 'text',
+        message: `bridge launch confirmed ${requestId}`,
+        runId: requestId,
+        agentId: request.agent,
+        taskId,
+        data: { launchMode },
+      });
       return { ok: true, runId: requestId, taskId, message: `zerg launched ${request.agent} as ${requestId} (${launchMode})` };
     },
     interrupt(runId) {
@@ -1972,6 +2269,13 @@ function createPiSlashBridgeAdapter(
         substate: 'cancelling',
         substateReason: 'interrupt requested',
       }, { now: options.now ?? (() => new Date()) }));
+      appendLogToContainer(container, options, {
+        source: 'adapter',
+        level: 'warn',
+        kind: 'text',
+        message: `interrupt requested for ${target}`,
+        runId: target,
+      });
       return { ok: true, runId: target, message: `interrupt requested for ${target}` };
     },
     dispose() {
@@ -2000,6 +2304,48 @@ function getEventRequestId(data: unknown): string | undefined {
   return data && typeof data === 'object' && typeof (data as { requestId?: unknown }).requestId === 'string'
     ? (data as { requestId: string }).requestId
     : undefined;
+}
+
+function parseBridgeUpdateLog(data: unknown, currentTool: string | undefined): { level: 'info' | 'error'; kind: 'text' | 'tool' | 'error'; message: string; data?: Record<string, unknown> } {
+  if (!data || typeof data !== 'object') {
+    return { level: 'info', kind: 'text', message: 'bridge progress update' };
+  }
+
+  const payload = data as { isError?: unknown; currentTool?: unknown; output?: unknown; message?: unknown; progress?: unknown };
+  if (payload.isError === true) {
+    return {
+      level: 'error',
+      kind: 'error',
+      message: firstString(payload.message, payload.output, payload.progress) ?? 'bridge update error',
+      data: currentTool ? { currentTool } : undefined,
+    };
+  }
+
+  if (currentTool) {
+    return {
+      level: 'info',
+      kind: 'tool',
+      message: `tool running: ${currentTool}`,
+      data: { currentTool },
+    };
+  }
+
+  const text = firstString(payload.output, payload.message, payload.progress);
+  if (text) {
+    return { level: 'info', kind: 'text', message: text };
+  }
+
+  return { level: 'info', kind: 'text', message: 'bridge progress update' };
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+
+  return undefined;
 }
 
 function renderZergConfigOverlay(
@@ -2041,7 +2387,10 @@ function renderZergConfigOverlay(
     lines.push(`  read-only: ${state.mode.readOnly ? 'enabled' : 'disabled'} (key: r)`);
     lines.push(`  active run: ${control.activeRunId ?? 'none'}${activeRunSubstate}`);
     const latestPermission = getPendingPermissionRequests(state).at(-1);
+    const logState = getZergLogState(state);
+    const latestLogWarning = logState.records.filter((record) => record.level === 'warn' || record.level === 'error').at(-1);
     lines.push(`  permissions: ${getPermissionQueueState(state).pendingCount} pending${latestPermission ? ` latest:${latestPermission.id} ${latestPermission.kind} ${latestPermission.summary}` : ''} (command: /zerg permission status)`);
+    lines.push(`  logs: ${logState.records.length}/${logState.maxRecords}${latestLogWarning ? ` latest:${latestLogWarning.id} ${latestLogWarning.level} ${latestLogWarning.message}` : ''} (command: /zerg logs status)`);
     lines.push('  Pi adapter: /zerg run emits pi-subagents slash bridge events when available');
     lines.push('  zerg adapter: command and overlay controls share the same adapter boundary');
   }

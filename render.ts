@@ -1,4 +1,4 @@
-import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergAgentDefinition, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergState, type ZergSubagentRunSnapshot, type ZergTreeNode } from './types.js';
+import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergAgentDefinition, type ZergLogRecord, type ZergLogState, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergState, type ZergSubagentRunSnapshot, type ZergTreeNode } from './types.js';
 
 export interface RenderOptions {
   width?: number;
@@ -19,6 +19,8 @@ export function renderMonitor(state: ZergState, options: MonitorRenderOptions = 
   const readOnly = Boolean(snapshot.mode?.readOnly) ? 'enabled' : 'disabled';
   const permissions = readRenderPermissionQueueState(snapshot);
   const latestPermission = permissions.requests.filter((request) => request.status === 'pending').at(-1);
+  const logs = readRenderLogState(snapshot);
+  const latestWarning = logs.records.filter((record) => record.level === 'warn' || record.level === 'error').at(-1);
   const monitorEventLimit = Math.max(1, eventCount);
   const recentEvents = [...(snapshot.events ?? [])].slice(-monitorEventLimit);
   const lines = [
@@ -26,6 +28,7 @@ export function renderMonitor(state: ZergState, options: MonitorRenderOptions = 
     `status: ${renderStatusLine(snapshot, { width })}`,
     `read-only: ${readOnly}`,
     `permissions: ${permissions.pendingCount} pending${latestPermission ? ` latest:${renderPermissionRequestInline(latestPermission)}` : ''}`,
+    `logs: ${logs.records.length}/${logs.maxRecords}${latestWarning ? ` latest:${renderLogRecordInline(latestWarning)}` : ''}`,
     'tree:',
   ];
 
@@ -65,7 +68,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const permissions = ` | permissions ${permissionQueue.pendingCount} pending`;
 
   return fit(
-    `zerg v1.0.0-rc.8 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${permissions}${activeIntervention}`,
+    `zerg v1.0.0-rc.9 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${permissions}${activeIntervention}`,
     options.width,
   );
 }
@@ -84,6 +87,92 @@ function readRenderPermissionQueueState(state: ZergState): ZergPermissionQueueSt
     lastRequestId: isPlainRecord(candidate) && typeof candidate.lastRequestId === 'string' ? candidate.lastRequestId : requests.at(-1)?.id,
     pendingCount: requests.filter((request) => request.status === 'pending').length,
   };
+}
+
+function readRenderLogState(state: ZergState): ZergLogState {
+  const candidate = state.extensions?.zergLogs;
+  const maxRecords = isPlainRecord(candidate) && typeof candidate.maxRecords === 'number' ? Math.max(1, Math.floor(candidate.maxRecords)) : 200;
+  const records = isPlainRecord(candidate) && Array.isArray(candidate.records)
+    ? candidate.records.filter(isRenderLogRecord).map(cloneRenderLogRecord).slice(-maxRecords)
+    : [];
+
+  return {
+    records,
+    maxRecords,
+    lastRecordId: isPlainRecord(candidate) && typeof candidate.lastRecordId === 'string' ? candidate.lastRecordId : records.at(-1)?.id,
+  };
+}
+
+function renderLogRecordInline(record: ZergLogRecord): string {
+  const target = record.runId ? ` run:${sanitizeRuntimeActivity(record.runId)}` : record.agentId ? ` agent:${sanitizeRuntimeActivity(record.agentId)}` : '';
+  return `${record.id} [${record.level}/${record.source}/${record.kind}]${target} ${sanitizeRuntimeActivity(record.message)}`;
+}
+
+function cloneRenderLogRecord(record: ZergLogRecord): ZergLogRecord {
+  return {
+    ...record,
+    data: isPlainRecord(record.data) ? { ...record.data } : undefined,
+  };
+}
+
+function isRenderLogRecord(value: unknown): value is ZergLogRecord {
+  return isPlainRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.source === 'string'
+    && typeof value.level === 'string'
+    && typeof value.kind === 'string'
+    && typeof value.message === 'string'
+    && typeof value.createdAt === 'string';
+}
+
+export function renderZergLogStatus(logState: ZergLogState, options: RenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+  const latest = logState.records.at(-1);
+  const errors = logState.records.filter((record) => record.level === 'error').length;
+  const warnings = logState.records.filter((record) => record.level === 'warn').length;
+  const lines = [
+    'zerg logs',
+    `records: ${logState.records.length}`,
+    `max: ${logState.maxRecords}`,
+    `warnings: ${warnings}`,
+    `errors: ${errors}`,
+    `latest: ${latest ? renderLogRecordInline(latest) : 'none'}`,
+  ];
+
+  return lines.map((line) => fit(line, width)).join('\n');
+}
+
+export function renderZergLogList(records: readonly ZergLogRecord[], options: RenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+  if (records.length === 0) {
+    return fit('zerg logs: no matching records', width);
+  }
+
+  const lines = ['zerg logs:'];
+  for (const record of records) {
+    lines.push(`- ${renderLogRecordInline(record)}`);
+  }
+
+  return lines.map((line) => fit(line, width)).join('\n');
+}
+
+export function renderZergLogSummary(record: ZergLogRecord, options: RenderOptions = {}): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+  const lines = [
+    `zerg log: ${record.id}`,
+    `source: ${record.source}`,
+    `level: ${record.level}`,
+    `kind: ${record.kind}`,
+    ...(record.runId ? [`run-id: ${record.runId}`] : []),
+    ...(record.agentId ? [`agent-id: ${record.agentId}`] : []),
+    ...(record.taskId ? [`task-id: ${record.taskId}`] : []),
+    ...(record.teamId ? [`team-id: ${record.teamId}`] : []),
+    `created-at: ${record.createdAt}`,
+    `message: ${sanitizeRuntimeActivity(record.message)}`,
+    ...(record.data ? [`data: ${sanitizeRuntimeActivity(JSON.stringify(record.data))}`] : []),
+  ];
+
+  return lines.map((line) => fit(line, width)).join('\n');
 }
 
 function renderPermissionRequestInline(request: ZergPermissionRequest): string {
@@ -334,7 +423,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.8 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0-rc.9 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',
@@ -343,6 +432,7 @@ export function renderHelp(state: ZergState, options: RenderOptions = {}): strin
     'Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]',
     'Control syntax: /zerg control status|controller pi|zerg|operator|readonly on|off|toggle|mode manual|assisted|automatic',
     'Permission syntax: /zerg permission status|list [all|pending|resolved]|request <kind> <target> <summary>|approve <id> [reason]|deny <id> [reason]|cancel <id> [reason]',
+    'Logs syntax: /zerg logs status|list [--run <id>] [--level debug|info|warn|error] [--limit <n>] | /zerg logs show <id|run-id> [--json] | /zerg logs json [--run <id>] [--limit <n>]',
     'Registry syntax: /zerg agents [list] | /zerg agents show <id>',
     'Config syntax: /zerg config opens the Pi overlay configuration window when available',
     'Run syntax: /zerg run <agent> <task> [--bg] [--fresh|--fork] (fresh is default isolated launch; fork requests inherited context where supported) | /zerg runs [list] | /zerg runs show <run-id> | /zerg interrupt [run-id]',

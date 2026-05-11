@@ -39,6 +39,9 @@ export type ZergPermissionDecision = 'approve' | 'deny' | 'cancel' | 'expire';
 export type ZergPermissionRequestKind = 'run' | 'interrupt' | 'tool' | 'mode' | 'intervention' | 'adapter';
 export type ZergPermissionRequester = 'operator' | 'pi' | 'zerg' | 'adapter';
 export type ZergPermissionResolver = 'operator' | 'pi' | 'zerg';
+export type ZergLogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type ZergLogSource = 'command' | 'adapter' | 'permission' | 'lifecycle' | 'overlay' | 'pi-event';
+export type ZergOutputKind = 'text' | 'json' | 'tool' | 'thinking' | 'result' | 'error';
 export const ZERG_STATE_SCHEMA_VERSION = '0.2.0' as const;
 export type ZergStateSchemaVersion = typeof ZERG_STATE_SCHEMA_VERSION;
 
@@ -143,6 +146,27 @@ export interface ZergPermissionQueueState {
   maxRequests: number;
   lastRequestId?: string;
   pendingCount: number;
+}
+
+export interface ZergLogRecord {
+  id: string;
+  runId?: string;
+  agentId?: string;
+  taskId?: string;
+  teamId?: string;
+  source: ZergLogSource;
+  level: ZergLogLevel;
+  kind: ZergOutputKind;
+  message: string;
+  data?: ZergExtensionFields;
+  sequence?: number;
+  createdAt: string;
+}
+
+export interface ZergLogState {
+  records: ZergLogRecord[];
+  maxRecords: number;
+  lastRecordId?: string;
 }
 
 export interface ZergSubagentControlAdapter {
@@ -288,7 +312,7 @@ export interface TaskRecord {
 
 export interface HookLifecycleEvent {
   id: string;
-  type: 'agent' | 'task' | 'team' | 'tree' | 'hook' | 'permission' | 'mode' | 'state';
+  type: 'agent' | 'task' | 'team' | 'tree' | 'hook' | 'permission' | 'mode' | 'state' | 'log';
   message: string;
   status?: AgentStatus | TaskStatus | ThinkingStepStatus;
   action?: ZergRuntimeTransitionAction;

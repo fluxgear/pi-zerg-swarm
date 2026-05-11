@@ -1,4 +1,4 @@
-import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentDefinition, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergPermissionDecision, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergPermissionRequester, type ZergPermissionRequestKind, type ZergPermissionRequestStatus, type ZergPermissionResolver, type ZergLifecycleSubstate, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStateListener, type ZergStatePatch, type ZergStateUpdateOptions, type ZergSubagentRunSnapshot, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
+import { ZERG_STATE_SCHEMA_VERSION, type AgentIdentity, type AgentKind, type AgentStatus, type HookLifecycleEvent, type PermissionModeIntervention, type PermissionModeInterventionInput, type PermissionModeSnapshot, type PermissionModeState, type PermissionModeTransitionInput, type TaskRecord, type TeamIdentity, type TeamKind, type ZergAgentDefinition, type ZergAgentRuntimeTransition, type ZergContext, type ZergExtensionFields, type ZergPermissionDecision, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergPermissionRequester, type ZergPermissionRequestKind, type ZergPermissionRequestStatus, type ZergPermissionResolver, type ZergLifecycleSubstate, type ZergLogLevel, type ZergLogRecord, type ZergLogSource, type ZergLogState, type ZergOutputKind, type ZergRuntimeHealth, type ZergRuntimeModeContext, type ZergRuntimeState, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergStateListener, type ZergStatePatch, type ZergStateUpdateOptions, type ZergSubagentRunSnapshot, type ZergTeamRuntimeTransition, type ZergTreeNode } from './types.js';
 
 const DEFAULT_TIMESTAMP = '1970-01-01T00:00:00.000Z';
 const MAX_LIFECYCLE_SUBSTATE_REASON_LENGTH = 160;
@@ -298,7 +298,14 @@ export const DEFAULT_PERMISSION_QUEUE_MAX_REQUESTS = 50;
 export const MAX_PERMISSION_SUMMARY_LENGTH = 160;
 export const MAX_PERMISSION_DETAILS_LENGTH = 480;
 export const MAX_PERMISSION_REASON_LENGTH = 240;
+export const DEFAULT_ZERG_LOG_MAX_RECORDS = 200;
+export const MAX_ZERG_LOG_MESSAGE_LENGTH = 480;
+const MAX_ZERG_LOG_DATA_DEPTH = 3;
+const MAX_ZERG_LOG_DATA_KEYS = 24;
+const MAX_ZERG_LOG_DATA_ARRAY_ITEMS = 20;
+const MAX_ZERG_LOG_DATA_STRING_LENGTH = 160;
 const ZERG_PERMISSION_EXTENSION_KEY = 'zergPermissions';
+const ZERG_LOG_EXTENSION_KEY = 'zergLogs';
 
 export interface EnqueuePermissionRequestInput {
   kind: ZergPermissionRequestKind;
@@ -319,6 +326,30 @@ export interface PermissionQueueMutationOptions extends ZergRuntimeTransitionOpt
   reason?: string;
 }
 
+export interface AppendZergLogRecordInput {
+  id?: string;
+  runId?: string;
+  agentId?: string;
+  taskId?: string;
+  teamId?: string;
+  source: ZergLogSource;
+  level?: ZergLogLevel;
+  kind?: ZergOutputKind;
+  message: string;
+  data?: ZergExtensionFields;
+  createdAt?: string;
+}
+
+export interface ZergLogMutationOptions extends ZergRuntimeTransitionOptions {
+  maxRecords?: number;
+}
+
+export interface ZergLogFilter {
+  runId?: string;
+  level?: ZergLogLevel;
+  limit?: number;
+}
+
 export function getPermissionQueueState(state: ZergState): ZergPermissionQueueState {
   return clonePermissionQueueState(readPermissionQueueCandidate(state), DEFAULT_PERMISSION_QUEUE_MAX_REQUESTS);
 }
@@ -327,6 +358,89 @@ export function getPendingPermissionRequests(state: ZergState): ZergPermissionRe
   return getPermissionQueueState(state).requests
     .filter((request) => request.status === 'pending')
     .map(clonePermissionRequest);
+}
+
+export function getZergLogState(state: ZergState): ZergLogState {
+  return cloneZergLogState(readZergLogCandidate(state), DEFAULT_ZERG_LOG_MAX_RECORDS);
+}
+
+export function appendZergLogRecord(
+  state: ZergState,
+  input: AppendZergLogRecordInput,
+  options: ZergLogMutationOptions = {},
+): ZergState {
+  return appendZergLogRecords(state, [input], options);
+}
+
+export function appendZergLogRecords(
+  state: ZergState,
+  inputs: readonly AppendZergLogRecordInput[],
+  options: ZergLogMutationOptions = {},
+): ZergState {
+  if (inputs.length === 0) {
+    return state;
+  }
+
+  const timestamp = resolveStateTransitionTimestamp(state, options);
+  const maxRecords = normalizeZergLogMax(options.maxRecords ?? getZergLogState(state).maxRecords);
+
+  return updateZergState(state, (base) => {
+    const currentLogState = getZergLogState(base);
+    let nextSequence = Math.max(base.revision, ...currentLogState.records.map((record) => record.sequence ?? 0));
+    const records = [...currentLogState.records];
+
+    for (const input of inputs) {
+      const message = sanitizeZergLogMessage(input.message);
+      if (!message) {
+        continue;
+      }
+
+      nextSequence += 1;
+      records.push(cloneZergLogRecord({
+        id: sanitizeZergLogId(input.id) || `log-${nextSequence}`,
+        source: input.source,
+        level: input.level ?? 'info',
+        kind: input.kind ?? 'text',
+        message,
+        sequence: nextSequence,
+        createdAt: input.createdAt ?? timestamp,
+        runId: sanitizeOptionalLogText(input.runId, MAX_PERMISSION_SUMMARY_LENGTH),
+        agentId: sanitizeOptionalLogText(input.agentId, MAX_PERMISSION_SUMMARY_LENGTH),
+        taskId: sanitizeOptionalLogText(input.taskId, MAX_PERMISSION_SUMMARY_LENGTH),
+        teamId: sanitizeOptionalLogText(input.teamId, MAX_PERMISSION_SUMMARY_LENGTH),
+        data: sanitizeZergLogData(input.data),
+      }));
+    }
+
+    const trimmedRecords = trimZergLogRecords(records, maxRecords);
+    return {
+      extensions: {
+        ...base.extensions,
+        [ZERG_LOG_EXTENSION_KEY]: cloneZergLogState({
+          records: trimmedRecords,
+          maxRecords,
+          lastRecordId: trimmedRecords.at(-1)?.id ?? currentLogState.lastRecordId,
+        }, maxRecords),
+      },
+    };
+  }, { updatedAt: timestamp, preserveRevision: true });
+}
+
+export function getZergLogs(state: ZergState, filter: ZergLogFilter = {}): ZergLogRecord[] {
+  const limit = normalizeZergLogLimit(filter.limit);
+  const records = getZergLogState(state).records.filter((record) => {
+    if (filter.runId && record.runId !== filter.runId) {
+      return false;
+    }
+
+    if (filter.level && record.level !== filter.level) {
+      return false;
+    }
+
+    return true;
+  });
+
+  return records.slice(-limit).map(cloneZergLogRecord);
 }
 
 export function enqueuePermissionRequest(
@@ -1060,6 +1174,164 @@ function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
     updatedAt: runtime?.updatedAt,
     metadata: cloneOptional(metadata, cloneExtensionFields),
   };
+}
+
+function readZergLogCandidate(state: ZergState): Partial<ZergLogState> | undefined {
+  const candidate = state.extensions[ZERG_LOG_EXTENSION_KEY];
+  return isPlainRecord(candidate) ? candidate as Partial<ZergLogState> : undefined;
+}
+
+function cloneZergLogState(
+  logState: Partial<ZergLogState> | undefined,
+  fallbackMaxRecords: number,
+): ZergLogState {
+  const maxRecords = normalizeZergLogMax(logState?.maxRecords ?? fallbackMaxRecords);
+  const rawRecords = Array.isArray(logState?.records) ? logState.records : [];
+  const records = trimZergLogRecords(rawRecords
+    .filter(isZergLogRecordLike)
+    .map((record) => cloneZergLogRecord(record)), maxRecords);
+  const lastRecordId = typeof logState?.lastRecordId === 'string' && logState.lastRecordId.trim()
+    ? logState.lastRecordId.trim()
+    : records.at(-1)?.id;
+
+  return {
+    records,
+    maxRecords,
+    lastRecordId,
+  };
+}
+
+function cloneZergLogRecord(record: ZergLogRecord): ZergLogRecord {
+  return {
+    id: record.id,
+    source: record.source,
+    level: record.level,
+    kind: record.kind,
+    message: record.message,
+    createdAt: record.createdAt,
+    runId: record.runId,
+    agentId: record.agentId,
+    taskId: record.taskId,
+    teamId: record.teamId,
+    data: sanitizeZergLogData(record.data),
+    sequence: record.sequence,
+  };
+}
+
+function isZergLogRecordLike(value: unknown): value is ZergLogRecord {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+
+  return typeof value.id === 'string'
+    && isZergLogSource(value.source)
+    && isZergLogLevel(value.level)
+    && isZergOutputKind(value.kind)
+    && typeof value.message === 'string'
+    && typeof value.createdAt === 'string';
+}
+
+function isZergLogLevel(value: unknown): value is ZergLogLevel {
+  return value === 'debug' || value === 'info' || value === 'warn' || value === 'error';
+}
+
+function isZergLogSource(value: unknown): value is ZergLogSource {
+  return value === 'command' || value === 'adapter' || value === 'permission' || value === 'lifecycle' || value === 'overlay' || value === 'pi-event';
+}
+
+function isZergOutputKind(value: unknown): value is ZergOutputKind {
+  return value === 'text' || value === 'json' || value === 'tool' || value === 'thinking' || value === 'result' || value === 'error';
+}
+
+function normalizeZergLogMax(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_ZERG_LOG_MAX_RECORDS;
+}
+
+function normalizeZergLogLimit(value: number | undefined): number {
+  return Number.isFinite(value) && value !== undefined && value > 0 ? Math.floor(value) : DEFAULT_ZERG_LOG_MAX_RECORDS;
+}
+
+function trimZergLogRecords(records: ZergLogRecord[], maxRecords: number): ZergLogRecord[] {
+  return records.map(cloneZergLogRecord).slice(-normalizeZergLogMax(maxRecords));
+}
+
+function sanitizeZergLogId(value: string | undefined): string {
+  return sanitizeZergLogMessage(value ?? '').replace(/\s+/g, '-');
+}
+
+function sanitizeZergLogMessage(value: string): string {
+  return value
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_ZERG_LOG_MESSAGE_LENGTH);
+}
+
+function sanitizeOptionalLogText(value: string | undefined, maxLength: number): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const sanitized = sanitizeZergLogMessage(value).slice(0, maxLength);
+  return sanitized || undefined;
+}
+
+function sanitizeZergLogData(value: ZergExtensionFields | undefined): ZergExtensionFields | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const sanitized = sanitizeZergLogDataValue(value, 0, new Set());
+  return isPlainRecord(sanitized) && Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+function sanitizeZergLogDataValue(value: unknown, depth: number, seen: Set<object>): unknown {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+    return Number.isNaN(value) ? undefined : value;
+  }
+
+  if (typeof value === 'string') {
+    return sanitizeZergLogMessage(value).slice(0, MAX_ZERG_LOG_DATA_STRING_LENGTH);
+  }
+
+  if (typeof value !== 'object' || depth >= MAX_ZERG_LOG_DATA_DEPTH) {
+    return undefined;
+  }
+
+  if (seen.has(value)) {
+    return undefined;
+  }
+
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const output = value
+      .slice(0, MAX_ZERG_LOG_DATA_ARRAY_ITEMS)
+      .map((item) => sanitizeZergLogDataValue(item, depth + 1, seen))
+      .filter((item) => item !== undefined);
+    seen.delete(value);
+    return output;
+  }
+
+  if (!isPlainRecord(value)) {
+    seen.delete(value);
+    return undefined;
+  }
+
+  const entries = Object.entries(value).slice(0, MAX_ZERG_LOG_DATA_KEYS);
+  const output: Record<string, unknown> = {};
+  for (const [key, nested] of entries) {
+    const sanitizedKey = sanitizeZergLogMessage(key).slice(0, 64);
+    if (!sanitizedKey) {
+      continue;
+    }
+
+    const sanitizedValue = sanitizeZergLogDataValue(nested, depth + 1, seen);
+    if (sanitizedValue !== undefined) {
+      output[sanitizedKey] = sanitizedValue;
+    }
+  }
+  seen.delete(value);
+  return output;
 }
 
 function readPermissionQueueCandidate(state: ZergState): Partial<ZergPermissionQueueState> | undefined {
