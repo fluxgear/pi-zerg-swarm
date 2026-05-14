@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createPiZergCommandHandler, createZergCommandHandler, registerZergSwarmExtension, type ZergExtensionRegistration } from '../index.js';
 import { installInternalPatch } from '../internal-patch.js';
 import { deriveThinkingSteps } from '../parse.js';
-import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderStatusLine, renderZergLogList, renderZergLogStatus } from '../render.js';
+import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderStatusLine, renderZergLogList, renderZergLogStatus, renderZergManagementOverlay } from '../render.js';
 import { appendHookEvent, appendZergLogRecord, appendZergLogRecords, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createBuiltinAgentDefinitions, createZergState, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getCurrentAgents, getCurrentMode, getCurrentTasks, getCurrentTeams, getCurrentTree, getPendingPermissionRequests, getPermissionQueueState, getSelectedTreeNode, getZergLogs, getZergLogState, readSharedZergState, removeAgentDefinition, replaceSharedZergState, replayRuntimeTransitions, resetZergState, resolvePermissionRequest, selectNode, setMode, snapshotZergState, upsertAgentDefinition, updateSharedZergState, updateZergState, upsertAgent, upsertTeam, upsertTreeNode } from '../state.js';
 import { ZERG_STATE_SCHEMA_VERSION, type AgentStatus, type HookLifecycleEvent, type StructuralPiCommandContext, type StructuralPiCommandOptions, type TaskStatus, type TeamIdentity, type ZergLifecycleSubstate, type ZergLogRecord, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchRequest, type ZergTreeNode } from '../types.js';
 
@@ -607,7 +607,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.9 internal patch unavailable; command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.10 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -620,11 +620,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.9 internal patch unavailable; command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.10 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.9 internal patch unavailable; command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.10 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -1306,7 +1306,7 @@ test('createZergCommandHandler applies mode status transitions and revert', () =
 
   const readOnlyStatus = readOnlyHandler('/zerg mode status');
   assert.equal(readOnlyStatus.ok, true);
-  assert.ok(readOnlyStatus.output.includes('zerg v1.0.0-rc.9 command surface'));
+  assert.ok(readOnlyStatus.output.includes('zerg v1.0.0-rc.10 command surface'));
   assert.ok(readOnlyStatus.output.includes('control operator'));
   assert.ok(readOnlyStatus.output.includes('mode manual'));
   assert.ok(readOnlyStatus.output.includes('no active intervention'));
@@ -1515,7 +1515,7 @@ test('render surfaces expose control intervention status tree markers and help s
   assert.ok(idleStatus.includes('control operator'));
   assert.ok(idleStatus.includes('mode manual'));
   assert.ok(idleStatus.includes('no active intervention'));
-  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.0-rc.9 command-surface scaffold');
+  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.0-rc.10 command-surface scaffold');
   assert.ok(idleHelp.includes('Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]'));
   assert.ok(idleHelp.includes('Monitor syntax: /zerg monitor [readonly on|off|toggle|status]'));
   assert.ok(idleHelp.includes('Registry syntax: /zerg agents [list] | /zerg agents show <id>'));
@@ -1546,7 +1546,7 @@ test('render surfaces expose control intervention status tree markers and help s
       },
     },
   });
-  const activeStatus = renderStatusLine(activeState, { width: 240 });
+  const activeStatus = renderStatusLine(activeState, { width: 320 });
   const fallbackTree = renderAgentTree(activeState, { width: 240 });
   const explicitTree = renderAgentTree(createZergState({
     agents: activeState.agents,
@@ -1582,7 +1582,7 @@ test('renderMonitor combines monitor header, runtime status, tree, and recent ev
   const monitor = renderMonitor(state, { width: 240, recentEventCount: 2 });
 
   assert.ok(monitor.includes('zerg monitor'));
-  assert.ok(monitor.includes('status: zerg v1.0.0-rc.9 command surface'));
+  assert.ok(monitor.includes('status: zerg v1.0.0-rc.10 command surface'));
   assert.ok(monitor.includes('read-only: enabled'));
   assert.ok(monitor.includes('tree:'));
   assert.ok(monitor.includes('recent events:'));
@@ -2307,16 +2307,29 @@ test('createZergCommandHandler supports control and config command foundation', 
   assert.equal(handler('/zerg control what').output, 'Unknown control action: what');
 });
 
-test('createPiZergCommandHandler renders config overlay and keyboard configuration controls', async () => {
-  const container = createZergStateContainer({
-    agents: { worker: { id: 'worker', label: 'Worker', kind: 'subagent', status: 'idle' } },
+test('createPiZergCommandHandler renders full config overlay and reuses management control paths', async () => {
+  let state = createZergState({
+    agents: Object.fromEntries(Array.from({ length: 25 }, (_, index) => {
+      const id = `worker-${String(index).padStart(2, '0')}`;
+      return [id, { id, label: `Worker ${index}`, kind: 'subagent', status: index === 0 ? 'running' : 'idle' }];
+    })),
   });
+  state = enqueuePermissionRequest(state, {
+    kind: 'run',
+    targetId: 'worker-01',
+    requester: 'operator',
+    summary: 'Run worker-01 now',
+  }, { id: 'perm-overlay', now: () => new Date('2026-05-07T01:09:00.000Z') });
+  const container = createZergStateContainer(state);
   const handler = createPiZergCommandHandler(container, {
     now: () => new Date('2026-05-07T01:10:00.000Z'),
   });
   const rendered: string[] = [];
-  let closed = false;
+  let closeCount = 0;
   let requestRenderCount = 0;
+  let selectedBeforeEnter: string | undefined;
+  let customOptions: Record<string, unknown> | undefined;
+  let callbackError: unknown;
 
   const context = {
     ui: {
@@ -2326,37 +2339,174 @@ test('createPiZergCommandHandler renders config overlay and keyboard configurati
           theme?: unknown,
           keybindings?: unknown,
           done?: () => void,
-        ) => { render(width?: number): string[]; invalidate(): void; handleInput?(data: string): void },
+        ) => { render(width?: number, height?: number): string[]; invalidate(): void; handleInput?(data: string): void; dispose?(): void },
         options?: Record<string, unknown>,
       ) => {
-        assert.equal(options?.overlay, true);
-        assert.deepEqual(options?.overlayOptions, { title: 'zerg config' });
+        if (options?.overlay !== true) {
+          return undefined;
+        }
+        customOptions = options;
         const component = factory(
           { requestRender: () => { requestRenderCount += 1; } },
           undefined,
           undefined,
-          () => { closed = true; },
+          () => { closeCount += 1; },
         );
-        rendered.push(component.render(120).join('\n'));
-        component.handleInput?.('\t');
-        component.handleInput?.('r');
-        component.handleInput?.('u');
-        component.handleInput?.('\u001b[B');
-        rendered.push(component.render(120).join('\n'));
-        component.handleInput?.('\u001b');
+        try {
+          rendered.push(component.render(120, 22).join('\n'));
+          component.handleInput?.('r');
+          component.handleInput?.('u');
+          component.handleInput?.('right');
+          component.handleInput?.('right');
+          component.handleInput?.('right');
+          for (let index = 0; index < 21; index += 1) {
+            component.handleInput?.('down');
+          }
+          rendered.push(component.render(120, 22).join('\n'));
+          selectedBeforeEnter = (container.snapshot().extensions.zergControl as { selectedTargetId?: string } | undefined)?.selectedTargetId;
+          component.handleInput?.('enter');
+          rendered.push(component.render(120, 22).join('\n'));
+          component.handleInput?.('right');
+          component.handleInput?.('p');
+          rendered.push(component.render(120, 22).join('\n'));
+          component.handleInput?.('p');
+          rendered.push(component.render(120, 22).join('\n'));
+        } catch (error) {
+          callbackError = error;
+          throw error;
+        } finally {
+          component.dispose?.();
+        }
       },
     },
   };
 
   await handler('/zerg config', context as StructuralPiCommandContext);
 
-  assert.equal(closed, true);
+  assert.equal(callbackError, undefined);
+  assert.equal(closeCount, 1);
   assert.equal(container.snapshot().mode.readOnly, true);
   assert.equal(container.snapshot().mode.automation, 'automatic');
-  assert.equal((container.snapshot().extensions.zergControl as { selectedTargetId?: string }).selectedTargetId, 'worker');
+  assert.equal(selectedBeforeEnter, undefined);
+  assert.equal(customOptions?.overlay, true);
+  assert.deepEqual(customOptions?.overlayOptions, { title: 'zerg config' });
   assert.ok(rendered[0]?.includes('zerg config'));
-  assert.ok(rendered[1]?.includes('[monitor]'));
-  assert.equal(requestRenderCount >= 4, true);
+  assert.ok(rendered[0]?.includes('[config]'));
+  assert.ok(rendered[1]?.includes('[targets]'));
+  assert.ok(rendered[1]?.includes('worker-06'));
+  assert.ok(rendered[2]?.includes('status: selected target worker-06'));
+  assert.ok(rendered[3]?.includes('confirm: press p again for perm-overlay'));
+  assert.ok(rendered[4]?.includes('permission request perm-overlay approved'));
+  assert.equal(requestRenderCount >= 10, true);
+});
+
+test('createPiZergCommandHandler config overlay refreshes from state updates and blocks mutations without writable state', async () => {
+  const container = createZergStateContainer(createZergState());
+  const handler = createPiZergCommandHandler(container);
+  let requestRenderCount = 0;
+  let closeCount = 0;
+  let refreshed = '';
+
+  const context = {
+    ui: {
+      custom: (
+        factory: (
+          tui?: { requestRender?(): void },
+          theme?: unknown,
+          keybindings?: unknown,
+          done?: () => void,
+        ) => { render(width?: number, height?: number): string[]; invalidate(): void; handleInput?(data: string): void; dispose?(): void },
+      ) => {
+        const component = factory(
+          { requestRender: () => { requestRenderCount += 1; } },
+          undefined,
+          undefined,
+          () => { closeCount += 1; },
+        );
+        try {
+          container.replace(enqueuePermissionRequest(container.snapshot(), {
+            kind: 'adapter',
+            targetId: 'bridge',
+            requester: 'operator',
+            summary: 'Refresh overlay permission',
+          }, { id: 'perm-refresh', now: () => new Date('2026-05-07T00:01:00.000Z') }));
+          component.invalidate();
+          refreshed = component.render(120, 22).join('\n');
+        } finally {
+          component.dispose?.();
+        }
+      },
+    },
+  };
+
+  await handler('/zerg config', context as StructuralPiCommandContext);
+  assert.equal(closeCount, 1);
+  assert.ok(refreshed.includes('perm-refresh') || refreshed.includes('permissions: 1 pending'));
+  const requestRenderCountAfterDispose = requestRenderCount;
+  container.update((state) => ({ metadata: { ...state.metadata, updatedAt: '2026-05-07T00:02:00.000Z' } }));
+  assert.equal(requestRenderCount, requestRenderCountAfterDispose);
+
+  const plainHandler = createPiZergCommandHandler(createZergState({
+    agents: { worker: { id: 'worker', label: 'Worker', kind: 'subagent', status: 'idle' } },
+  }));
+  let plainRendered = '';
+  const plainContext = {
+    ui: {
+      custom: (
+        factory: (
+          tui?: { requestRender?(): void },
+          theme?: unknown,
+          keybindings?: unknown,
+          done?: () => void,
+        ) => { render(width?: number, height?: number): string[]; invalidate(): void; handleInput?(data: string): void; dispose?(): void },
+      ) => {
+        const component = factory(undefined, undefined, undefined, () => undefined);
+        component.handleInput?.('r');
+        plainRendered = component.render(120, 22).join('\n');
+        component.handleInput?.('right');
+        component.handleInput?.('right');
+        component.handleInput?.('right');
+        component.handleInput?.('enter');
+        plainRendered += `\n${component.render(120, 22).join('\n')}`;
+      },
+    },
+  };
+
+  await plainHandler('/zerg config', plainContext as StructuralPiCommandContext);
+  assert.ok(plainRendered.includes('Runtime lifecycle commands require writable zerg state.'));
+});
+
+test('renderZergManagementOverlay does not mutate state or rows', () => {
+  const state = createZergState({
+    mode: { automation: 'assisted', interventionEnabled: true, controller: 'operator', readOnly: true },
+  });
+  const rows = [{
+    id: 'row-1',
+    kind: 'target' as const,
+    label: 'worker-1 Worker 1 [running/executing]',
+    selectable: true,
+    detailLines: ['detail one', 'detail two'],
+  }];
+  const before = snapshotZergState(state);
+  const beforeRows = rows.map((row) => ({ ...row, detailLines: [...(row.detailLines ?? [])] }));
+
+  const overlay = renderZergManagementOverlay(state, {
+    width: 120,
+    height: 22,
+    activeTab: 'targets',
+    tabs: ['monitor', 'control', 'targets', 'permissions', 'lifecycle', 'logs', 'intervene', 'config'] as const,
+    rows,
+    selectedIndex: 0,
+    scrollOffset: 0,
+    detailRowId: 'row-1',
+    statusMessage: 'selected target worker-1',
+    confirmMessage: 'press p again',
+    adapterKind: 'fake',
+  });
+
+  assert.ok(overlay.includes('zerg config'));
+  assert.deepEqual(state, before);
+  assert.deepEqual(rows, beforeRows);
 });
 
 test('createPiZergCommandHandler renders monitor through real custom overlay options and preserves legacy fallback', async () => {
@@ -2366,8 +2516,9 @@ test('createPiZergCommandHandler renders monitor through real custom overlay opt
   const notifications: string[] = [];
   const customCalls: Array<{ options: Record<string, unknown> | undefined }> = [];
 
-  let closed = false;
+  let closeCount = 0;
   let requestRenderCount = 0;
+  let component: { render(width?: number, height?: number): string[]; invalidate(): void; handleInput?(data: string): void; dispose?(): void } | undefined;
   const monitorContext = {
     ui: {
       custom: (
@@ -2376,20 +2527,27 @@ test('createPiZergCommandHandler renders monitor through real custom overlay opt
           theme?: unknown,
           keybindings?: unknown,
           done?: () => void,
-        ) => { render(width?: number): string[]; invalidate(): void; handleInput?(data: string): void },
+        ) => { render(width?: number, height?: number): string[]; invalidate(): void; handleInput?(data: string): void; dispose?(): void },
         options?: Record<string, unknown>,
       ) => {
         customCalls.push({ options });
-        const component = factory(
+        component = factory(
           { requestRender: () => { requestRenderCount += 1; } },
           undefined,
           undefined,
-          () => { closed = true; },
+          () => { closeCount += 1; },
         );
         const lines = component.render(120);
         assert.equal(Array.isArray(lines), true);
         assert.equal(typeof component.invalidate, 'function');
         assert.equal(typeof component.handleInput, 'function');
+        assert.equal(typeof component.dispose, 'function');
+        const before = container.snapshot();
+        component.handleInput?.('r');
+        component.handleInput?.('m');
+        component.handleInput?.('p');
+        component.handleInput?.('\u001b[B');
+        assert.deepEqual(container.snapshot(), before);
         container.update((state) => ({ metadata: { ...state.metadata, updatedAt: '2026-05-07T00:00:00.000Z' } }));
         component.invalidate();
         component.handleInput?.('q');
@@ -2403,7 +2561,7 @@ test('createPiZergCommandHandler renders monitor through real custom overlay opt
 
   await handler('/zerg monitor', monitorContext as StructuralPiCommandContext);
 
-  assert.equal(closed, true);
+  assert.equal(closeCount, 1);
   assert.equal(requestRenderCount, 1);
   assert.equal(rendered.length, 1);
   assert.ok(rendered[0]?.includes('zerg monitor'));
@@ -2411,6 +2569,9 @@ test('createPiZergCommandHandler renders monitor through real custom overlay opt
   assert.equal(customCalls.length, 1);
   assert.equal(customCalls[0]?.options?.overlay, true);
   assert.deepEqual(customCalls[0]?.options?.overlayOptions, { title: 'zerg monitor' });
+  component?.dispose?.();
+  container.update((state) => ({ metadata: { ...state.metadata, updatedAt: '2026-05-07T00:01:00.000Z' } }));
+  assert.equal(requestRenderCount, 1);
 
   const legacyRendered: string[] = [];
   const legacyContext = {
@@ -2721,7 +2882,7 @@ test('render monitoring summarizes runtime health activity without mutation', ()
   const status = renderStatusLine(state, { width: 240 });
   const tree = renderAgentTree(state, { width: 240 });
 
-  assert.ok(status.includes('zerg v1.0.0-rc.9 command surface'));
+  assert.ok(status.includes('zerg v1.0.0-rc.10 command surface'));
   assert.ok(status.includes('agents 1 (1 running)'));
   assert.ok(status.includes('teams 1 (0 running)'));
   assert.ok(status.includes('unhealthy 1'));
@@ -2961,7 +3122,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.9 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.10 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -2981,8 +3142,8 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
   try {
     assert.equal(registration.patchInstalled, true);
     assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
-    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.9 internal patch path active']);
-    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.9 internal patch path active']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.10 internal patch path active']);
+    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.10 internal patch path active']);
 
     eventBus.emit('zerg:smoke');
 
@@ -3006,7 +3167,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
     });
 
     assert.equal(notifications.length, 1);
-    assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.9 command surface'));
+    assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.10 command surface'));
     assert.equal(notifications[0]?.type, 'info');
   } finally {
     registration.dispose();

@@ -7,6 +7,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-rc.10] - 2026-05-14
+
+### Added
+
+- Added the full `/zerg config` management overlay with monitor, control, targets, permissions, lifecycle, logs, intervene, and config tabs.
+- Added overlay-local selection, scroll, detail, confirmation, status-message, and exact-once close/dispose handling for the Pi custom overlay path.
+- Added keyboard support for tab cycling, left/right tab navigation, clamped up/down row movement, enter detail toggle and explicit selection, permission approve/deny confirmation, interrupt requests, and deterministic deferred filter messaging.
+- Added regression coverage for overlay contract/dispose semantics, tab/navigation/scroll behavior, refresh/unsubscribe handling, no-writable-container mutation blocking, permission confirmation, and render immutability.
+
+### Changed
+
+- Kept `/zerg monitor` read-only while expanding `/zerg config` into the full management surface.
+- Reused existing audited command/state paths for read-only, automation mode, permission resolution, interrupt, and intervention mutations instead of adding overlay-only direct state writes.
+- Bumped package manifest versions from `1.0.0-rc.9` to `1.0.0-rc.10` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, and matching tests from `v1.0.0-rc.9` to `v1.0.0-rc.10`.
+
+### Known Limitations
+
+- Manual Pi smoke for the management overlay was not run in this environment, so live host-behavior verification remains outstanding.
+- Text filter entry (`/` or `f`) is deferred to a deterministic status message; freeform in-overlay filtering is not yet implemented.
+- Live overlay chat/process transport and external transport wiring remain future scope.
+
 ## [1.0.0-rc.9] - 2026-05-11
 
 ### Added

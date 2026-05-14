@@ -1,4 +1,4 @@
-import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergAgentDefinition, type ZergLogRecord, type ZergLogState, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergState, type ZergSubagentRunSnapshot, type ZergTreeNode } from './types.js';
+import { ZERG_COMMAND_INVOCATIONS, type AgentIdentity, type HookLifecycleEvent, type TaskRecord, type TeamIdentity, type ZergAgentDefinition, type ZergConfigOverlayTab, type ZergLogRecord, type ZergLogState, type ZergPermissionQueueState, type ZergPermissionRequest, type ZergState, type ZergSubagentRunSnapshot, type ZergTreeNode } from './types.js';
 
 export interface RenderOptions {
   width?: number;
@@ -10,6 +10,109 @@ const MAX_MONITOR_EVENTS = 8;
 
 export interface MonitorRenderOptions extends RenderOptions {
   recentEventCount?: number;
+}
+
+export interface ZergManagementOverlayRow {
+  id: string;
+  label: string;
+  kind: 'text' | 'target' | 'permission' | 'run' | 'log' | 'intervention' | 'config' | 'event';
+  selectable?: boolean;
+  targetId?: string;
+  runId?: string;
+  requestId?: string;
+  detailLines?: string[];
+}
+
+export interface ZergManagementOverlayRenderOptions extends RenderOptions {
+  height?: number;
+  activeTab: ZergConfigOverlayTab;
+  tabs: readonly ZergConfigOverlayTab[];
+  rows: readonly ZergManagementOverlayRow[];
+  selectedIndex?: number;
+  scrollOffset?: number;
+  detailRowId?: string;
+  statusMessage?: string;
+  confirmMessage?: string;
+  adapterKind?: string;
+}
+
+export function renderZergManagementOverlay(
+  state: ZergState,
+  options: ZergManagementOverlayRenderOptions,
+): string {
+  const width = options.width ?? DEFAULT_WIDTH;
+  const rows = [...options.rows];
+  const selectableRows = rows.filter((row) => row.selectable !== false);
+  const hasSelectableRows = selectableRows.length > 0;
+  const clampedSelectedIndex = rows.length === 0
+    ? 0
+    : Math.max(0, Math.min(options.selectedIndex ?? 0, rows.length - 1));
+  const desiredVisibleRows = Math.max(6, Math.min(20, (options.height ?? 22) - 8));
+  const maxScrollOffset = Math.max(0, rows.length - desiredVisibleRows);
+  const baseScrollOffset = Math.max(0, Math.min(options.scrollOffset ?? 0, maxScrollOffset));
+  const scrollOffset = rows.length === 0
+    ? 0
+    : clampedSelectedIndex < baseScrollOffset
+      ? clampedSelectedIndex
+      : clampedSelectedIndex >= baseScrollOffset + desiredVisibleRows
+        ? Math.max(0, clampedSelectedIndex - desiredVisibleRows + 1)
+        : baseScrollOffset;
+  const visibleRows = rows.slice(scrollOffset, scrollOffset + desiredVisibleRows);
+  const tabLine = options.tabs.map((tab) => tab === options.activeTab ? `[${tab}]` : ` ${tab} `).join(' ');
+  const lines = [
+    'zerg config',
+    tabLine,
+    overlayKeyHelp(options.activeTab),
+  ];
+
+  if (options.statusMessage) {
+    lines.push(`status: ${sanitizeRuntimeActivity(options.statusMessage)}`);
+  }
+  if (options.confirmMessage) {
+    lines.push(`confirm: ${sanitizeRuntimeActivity(options.confirmMessage)}`);
+  }
+  if (state.mode?.readOnly) {
+    lines.push('warning: read-only enabled; mutations may queue permission or be blocked');
+  }
+  if (options.adapterKind) {
+    lines.push(`adapter: ${sanitizeRuntimeActivity(options.adapterKind)}`);
+  }
+  lines.push('');
+
+  if (rows.length === 0) {
+    lines.push(`${options.activeTab}: none`);
+  } else {
+    for (let index = 0; index < visibleRows.length; index += 1) {
+      const row = visibleRows[index]!;
+      const rowIndex = scrollOffset + index;
+      const selected = rowIndex === clampedSelectedIndex;
+      const marker = selected && hasSelectableRows && row.selectable !== false ? '>' : ' ';
+      lines.push(`${marker} ${sanitizeRuntimeActivity(row.label)}`);
+      if (options.detailRowId === row.id) {
+        for (const detailLine of row.detailLines ?? []) {
+          lines.push(`    ${sanitizeRuntimeActivity(detailLine) || 'none'}`);
+        }
+      }
+    }
+  }
+
+  lines.push('');
+  lines.push(`footer: rows ${rows.length === 0 ? '0/0' : `${scrollOffset + 1}-${Math.min(rows.length, scrollOffset + visibleRows.length)}/${rows.length}`} | revision ${state.revision} | updated ${state.metadata.updatedAt}`);
+  return lines.map((line) => fit(line, width)).join('\n');
+}
+
+function overlayKeyHelp(tab: ZergConfigOverlayTab): string {
+  const common = 'keys: tab/shift-tab/←/→ tabs | ↑/↓ rows | enter detail/select | q/esc close';
+  if (tab === 'permissions') {
+    return `${common} | p approve | d deny | / filter deferred`;
+  }
+  if (tab === 'targets' || tab === 'lifecycle') {
+    return `${common} | i interrupt | / filter deferred`;
+  }
+  if (tab === 'intervene') {
+    return `${common} | enter record intervention | / filter deferred`;
+  }
+  return `${common} | r read-only | m manual | a assisted | u automatic | / filter deferred`;
 }
 
 export function renderMonitor(state: ZergState, options: MonitorRenderOptions = {}): string {
@@ -68,7 +171,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const permissions = ` | permissions ${permissionQueue.pendingCount} pending`;
 
   return fit(
-    `zerg v1.0.0-rc.9 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${permissions}${activeIntervention}`,
+    `zerg v1.0.0-rc.10 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${permissions}${activeIntervention}`,
     options.width,
   );
 }
@@ -423,7 +526,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.9 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0-rc.10 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',

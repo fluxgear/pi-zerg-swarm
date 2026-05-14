@@ -447,13 +447,14 @@ export interface StructuralPiCustomComponent {
   render(width?: number, height?: number): string[];
   invalidate(): void;
   handleInput?(data: string): unknown;
+  dispose?(): void;
 }
 
 export interface StructuralPiTuiHandle {
   requestRender?(): void;
 }
 
-export type ZergConfigOverlayTab = 'monitor' | 'control' | 'targets' | 'config';
+export type ZergConfigOverlayTab = 'monitor' | 'control' | 'targets' | 'permissions' | 'lifecycle' | 'logs' | 'intervene' | 'config';
 
 export type StructuralPiCustomFactory = (
   tui?: StructuralPiTuiHandle,
