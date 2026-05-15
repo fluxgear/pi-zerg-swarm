@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-05-15
+
+### Fixed
+
+- Aligned runtime status/help/internal-patch messages with package release version `v1.0.2` instead of retaining stale `v1.0.0` command-surface strings.
+- Centralized the command-surface version string for runtime rendering and registration messages to avoid future package/runtime drift.
+- Made successful adapter launch output robust when an adapter returns `ok: true` without an optional message.
+- Fixed custom run/task ID normalization so unprefixed ID factory values produce `zerg-*`/`task-*` IDs without doubled hyphens.
+
+### Changed
+
+- Bumped package manifest versions from `1.0.1` to `1.0.2` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-release and check-version wording from `v1.0.1` to `v1.0.2`.
+
 ## [1.0.1] - 2026-05-15
 
 ### Added

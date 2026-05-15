@@ -3,7 +3,7 @@ import { deriveThinkingSteps } from './parse.js';
 import { openZergManagementOverlay } from './ui/management-overlay.js';
 import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderPermissionQueueStatus, renderStatusLine, renderZergLogList, renderZergLogStatus, renderZergLogSummary, renderZergManagementOverlay, renderZergSubagentRunList, renderZergSubagentRunSummary, type ZergManagementOverlayRow } from './render.js';
 import { appendZergLogRecord, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, getZergLogs, getZergLogState, readSharedZergState, removeAgentDefinition, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertAgentDefinition, upsertTask, type ZergLogFilter } from './state.js';
-import { ZERG_COMMANDS, type AgentKind, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type TeamKind, type ZergAgentDefinition, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergManagementTargetKind, type ZergOperatorMessageDeliveryStatus, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
+import { ZERG_COMMANDS, type AgentKind, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type TeamKind, type ZergAgentDefinition, ZERG_EXTENSION_VERSION, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergManagementTargetKind, type ZergOperatorMessageDeliveryStatus, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
 
 type ZergIdFactory = {
   runId?: () => string;
@@ -159,8 +159,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0 internal patch unavailable; command surface registered',
+        ? `pi-zerg-swarm v${ZERG_EXTENSION_VERSION} internal patch path active`
+        : `pi-zerg-swarm v${ZERG_EXTENSION_VERSION} internal patch unavailable; command surface registered`,
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -1027,11 +1027,12 @@ function dispatchRunCommand(
   const result = adapter.launch(request);
 
   if (result.ok) {
+    const successMessage = result.message || `adapter launch accepted ${runId}`;
     const logged = appendLogToContainer(container, options, {
       source: 'adapter',
       level: 'info',
       kind: 'text',
-      message: result.message || `adapter launch accepted ${runId}`,
+      message: successMessage,
       runId,
       agentId: resolvedAgentId,
       taskId,
@@ -1044,7 +1045,7 @@ function dispatchRunCommand(
       ok: true,
       runId,
       taskId,
-      output: appendSpawnIdentifiers(appendSpawnLaunchMode(result.message, launchMode), runId, taskId),
+      output: appendSpawnIdentifiers(appendSpawnLaunchMode(successMessage, launchMode), runId, taskId),
     };
   }
 
@@ -1552,9 +1553,9 @@ function sanitizeSpawnId(value: string, prefix: string): string {
   const base = safe.replace(/[^a-zA-Z0-9._-]/g, '-');
   const normalized = `${base}`.replace(/-+/g, '-').replace(/^-+|-+$/g, '');
   if (normalized.length === 0) {
-    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return `${prefix}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   }
-  return normalized.startsWith(prefix) ? normalized : `${prefix}-${normalized}`;
+  return normalized.startsWith(prefix) ? normalized : `${prefix}${normalized}`;
 }
 
 function appendSpawnIdentifiers(message: string, runId: string, taskId: string): string {
