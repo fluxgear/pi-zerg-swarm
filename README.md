@@ -3,13 +3,13 @@
 `pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
 
 
-> **v1.0.0-rc.10 release-candidate status**
-> Candidate metadata and release notes include the full management-overlay milestone for the RC path.
-> Runtime capability remains bounded: `/zerg config` now provides the management overlay, while live chat and external transport remain unimplemented and unvalidated.
+> **v1.0.0-rc.11 release-candidate status**
+> Candidate metadata and release notes include the interactive TUI management milestone for the RC path.
+> Runtime capability remains bounded: `/zerg config` now provides the interactive management TUI; operator messages use honest local/intervention status while delivered chat transport and manual host smoke remain unvalidated.
 
 ## Release status
 
-- Current candidate: **v1.0.0-rc.10** (release-candidate path with the full management overlay included).
+- Current candidate: **v1.0.0-rc.11** (release-candidate path with the interactive TUI management overlay included).
 - Historical milestones preserved for audit traceability: v0.8.0 implementation milestone and v0.8.1 audit follow-up patch.
 - Mandatory RC audits for this candidate: `prompts/audit/generalized-deep-audit_v2-0-0.md`, `prompts/audit/milestone-audit_v2-0-0.md`, `prompts/audit/security-audit_v2-0-0.md`, `prompts/audit/performance-audit_v2-0-0.md`, `prompts/audit/hardening-sweep_v2-0-0.md`, and `prompts/audit/themed-cleanup_v2-0-0.md`.
 - Canonical repository metadata is configured for the public repo: https://github.com/fluxgear/pi-zerg-swarm.
@@ -20,8 +20,8 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v1.0.0-rc.10 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, read-only agent-definition registry listing, adapter-backed run listing, task-first subagent spawn state, explicit fresh/fork launch-mode metadata, command-host permission queue state, fine-grained lifecycle substate hints, bounded structured log/output inspection, and a full Pi-native management overlay for monitor/control/targets/permissions/lifecycle/logs/intervention/config views through snapshot-safe shared-state-backed Pi command handlers.
-Command-host control grammar is available via `/zerg mode status|manual|assisted|automatic|revert [reason]`, `/zerg intervene agent|subagent|leader ...`, `/zerg agents list|show <id>`, `/zerg runs list|show <run-id>`, `/zerg permission status|list|request|approve|deny|cancel`, `/zerg logs status|list|show|json`, `/zerg config`, and `/zerg run <agent> <task> [--bg] [--fresh|--fork]`; live overlay chat/process-transport wiring is still out of scope.
+At v1.0.0-rc.11 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, read-only agent-definition registry listing, adapter-backed run listing, task-first subagent spawn state, explicit fresh/fork launch-mode metadata, command-host permission queue state, fine-grained lifecycle substate hints, bounded structured log/output inspection, and a componentized Pi-native interactive management TUI for live tree/detail/settings/chat/footer management views through snapshot-safe shared-state-backed Pi command handlers.
+Command-host control grammar is available via `/zerg mode status|manual|assisted|automatic|revert [reason]`, `/zerg intervene agent|subagent|leader ...`, `/zerg agents list|show <id>`, `/zerg runs list|show <run-id>`, `/zerg permission status|list|request|approve|deny|cancel`, `/zerg logs status|list|show|json`, `/zerg config`, and `/zerg run <agent> <task> [--bg] [--fresh|--fork]`; delivered chat/process-transport wiring is still out of scope, with operator messages recorded as local/unavailable or intervention-recorded only.
 
 ## Architecture
 
@@ -90,9 +90,9 @@ npm test
 npm run check:package
 npm run check:version
 ```
-`npm run build` performs strict TypeScript no-emit checking. `npm test` runs parser plus command-surface coverage, v0.2.0 state/container behavior, registration snapshot semantics, v0.3.0 thinking-step parser coverage, internal-patch event-bus wrapping/duplicate/rollback/dispose paths, v0.4.1 release-hygiene assertions, v0.5.1 render regressions, v0.6.1 lifecycle/monitoring/shared-state coverage, v0.7.1 mode/intervention coverage, and audit-bugfix/publish-readiness regressions with fake-Pi shared-state parity checks using Node's built-in test runner and `tsx`.
+`npm run build` performs strict TypeScript no-emit checking. `npm test` runs parser plus command-surface coverage, state/container behavior, registration snapshot semantics, internal-patch event-bus wrapping/duplicate/rollback/dispose paths, render/lifecycle/mode/permission/log regressions, and focused M9 UI coverage for management overlay lifecycle, tree navigation, settings/actions, chat delivery semantics, and fake-Pi shared-state parity checks using Node's built-in test runner and `tsx`.
 `npm run check:package` validates MIT/license metadata, package/build private-path guards, package-lock↔package version sync, and repository metadata fields for release discoverability and consistency.
-`npm run check:version` confirms that the package release tag `v1.0.0-rc.10` is at `HEAD` in post-tag state. During explicit pre-tag RC prep, skip this check until the `v1.0.0-rc.10` tag exists at `HEAD`; if run earlier, the failure is expected.
+`npm run check:version` confirms that the package release tag `v1.0.0-rc.11` is at `HEAD` in post-tag state. During explicit pre-tag RC prep, skip this check until the `v1.0.0-rc.11` tag exists at `HEAD`; if run earlier, the failure is expected.
 
 ## Roadmap
 
@@ -117,9 +117,10 @@ npm run check:version
 - v1.0.0-rc.7: release-candidate command-host permission queue and approval audit surfaces (completed)
 - v1.0.0-rc.8: release-candidate fine-grained lifecycle substates for agents, teams, tasks, runs, and permission waits (completed)
 - v1.0.0-rc.9: release-candidate structured output and bounded logs for runs, permissions, lifecycle events, and management views (completed)
-- v1.0.0-rc.10: release-candidate full management overlay for monitor, control, targets, permissions, lifecycle, logs, intervention, and config views (current candidate)
+- v1.0.0-rc.10: release-candidate full management overlay for monitor, control, targets, permissions, lifecycle, logs, intervention, and config views (completed)
+- v1.0.0-rc.11: release-candidate interactive TUI management product with live tree/detail/settings/chat/footer surfaces (current candidate)
 - v1.0.0: stable release after RC sign-off
-- post-v1.0.0: live TUI overlays, chat, and external transport validation
+- post-v1.0.0: delivered chat/process transport and external transport validation
 
 ## License
 

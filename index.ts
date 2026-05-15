@@ -1,8 +1,9 @@
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
+import { openZergManagementOverlay } from './ui/management-overlay.js';
 import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderPermissionQueueStatus, renderStatusLine, renderZergLogList, renderZergLogStatus, renderZergLogSummary, renderZergManagementOverlay, renderZergSubagentRunList, renderZergSubagentRunSummary, type ZergManagementOverlayRow } from './render.js';
 import { appendZergLogRecord, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, getZergLogs, getZergLogState, readSharedZergState, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertTask, type ZergLogFilter } from './state.js';
-import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
+import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergManagementTargetKind, type ZergOperatorMessageDeliveryStatus, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
 
 type ZergIdFactory = {
   runId?: () => string;
@@ -158,8 +159,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.10 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.10 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0-rc.11 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0-rc.11 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -2681,6 +2682,67 @@ function renderZergConfigOverlay(
   });
 }
 
+function createManagementOverlayActions(stateOrReader: ZergStateSource, runtimeOptions: RuntimeCommandOptions) {
+  const mutateControl = (payload: string) => dispatchControlCommand(stateOrReader, payload, runtimeOptions).output;
+  const mutatePermission = (payload: string) => dispatchPermissionCommand(stateOrReader, payload, runtimeOptions).output;
+
+  return {
+    now: () => (runtimeOptions.now ?? (() => new Date()))(),
+    toggleReadOnly: () => mutateControl('readonly toggle'),
+    setAutomation: (mode: AutomationMode) => mutateControl(`mode ${mode}`),
+    setController: (controller: ZergControlController) => mutateControl(`controller ${controller}`),
+    approvePermission: (requestId: string) => mutatePermission(`approve ${requestId}`),
+    denyPermission: (requestId: string) => mutatePermission(`deny ${requestId}`),
+    selectTarget: (target: { id: string; kind: ZergManagementTargetKind }) => {
+      const container = getWritableStateContainer(stateOrReader);
+      if (!container) {
+        return RUNTIME_WRITABLE_STATE_ERROR;
+      }
+      updateZergControlState(container, { selectedTargetId: target.id }, `selected target ${target.id}`, runtimeOptions);
+      return `selected ${target.kind} ${target.id}`;
+    },
+    interruptSelected: (target: { id: string; kind: ZergManagementTargetKind } | undefined) => {
+      const snapshot = resolveZergStateSnapshot(stateOrReader);
+      const runId = target?.kind === 'agent'
+        ? target.id
+        : getZergControlState(snapshot).activeRunId;
+      if (!runId) {
+        return 'no active run selected for interrupt';
+      }
+      return dispatchInterruptCommand(stateOrReader, runId, runtimeOptions).output;
+    },
+    sendOperatorMessage: (target: { id: string; kind: ZergManagementTargetKind }, body: string): { status: ZergOperatorMessageDeliveryStatus; statusDetail: string; routedTargetId?: string } => {
+      const snapshot = resolveZergStateSnapshot(stateOrReader);
+      if (target.kind === 'task') {
+        return { status: 'transport-unavailable', statusDetail: 'Tasks have no verified live message transport; operator message retained locally.' };
+      }
+      if (target.kind === 'team') {
+        const team = snapshot.teams[target.id];
+        if (!team?.leaderAgentId) {
+          return { status: 'transport-unavailable', statusDetail: `Team ${target.id} has no leader; operator message retained locally.` };
+        }
+        const result = dispatchInterventionCommand(stateOrReader, `leader ${target.id} ${body}`, runtimeOptions);
+        return {
+          status: result.ok ? 'intervention-recorded' : 'transport-unavailable',
+          statusDetail: result.ok ? `${result.output}; not delivered as chat transport.` : result.output,
+          routedTargetId: team.leaderAgentId,
+        };
+      }
+      const agent = snapshot.agents[target.id];
+      if (!agent) {
+        return { status: 'transport-unavailable', statusDetail: `Agent ${target.id} is unavailable; operator message retained locally.` };
+      }
+      const kind = agent.kind === 'subagent' ? 'subagent' : 'agent';
+      const result = dispatchInterventionCommand(stateOrReader, `${kind} ${target.id} ${body}`, runtimeOptions);
+      return {
+        status: result.ok ? 'intervention-recorded' : 'transport-unavailable',
+        statusDetail: result.ok ? `${result.output}; not delivered as chat transport.` : result.output,
+        routedTargetId: target.id,
+      };
+    },
+  };
+}
+
 export function createPiZergCommandHandler(
   stateOrReader: ZergStateSource,
   options: ZergCommandHandlerOptions = {},
@@ -2694,6 +2756,20 @@ export function createPiZergCommandHandler(
     const output = typeof result === 'string' ? result : result.output;
 
     if ((normalized.topic === 'monitor' || normalized.topic === 'config') && context.ui?.custom) {
+      if (normalized.topic === 'config') {
+        try {
+          openZergManagementOverlay(context, {
+            getSnapshot: () => resolveZergStateSnapshot(stateOrReader),
+            subscribe: (listener) => subscribeToZergState(stateOrReader, listener),
+            adapterKind: runtimeOptions.subagentAdapter?.kind ?? 'unavailable',
+            actions: createManagementOverlayActions(stateOrReader, runtimeOptions),
+          });
+          return;
+        } catch {
+          // Fall back to the M8 text management overlay path below when the M9 component path is unavailable.
+        }
+      }
+
       const overlayTopic = normalized.topic as 'monitor' | 'config';
       let activeTab: ZergConfigOverlayTab = overlayTopic === 'monitor' ? 'monitor' : 'config';
       const selectedIndexByTab: Record<ZergConfigOverlayTab, number> = {

@@ -7,6 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0-rc.11] - 2026-05-14
+
+### Added
+
+- Added the M9 componentized Pi-native interactive management TUI for `/zerg config`, split across `ui/management-overlay.ts`, tree, detail, chat, settings, footer, component, and local UI-state modules.
+- Added live tree browsing for agents, teams, and tasks with expand/collapse, clamped navigation, confirmed selection, and detail drill-down.
+- Added detail, settings/action, chat/operator-message, and footer panes with focus routing, live state refresh, bounded rendering, and exact-once teardown.
+- Added honest operator message handling: team messages resolve to leaders when present, unavailable transport is explicit, and intervention records are never labeled as delivered chat.
+- Added focused UI tests for overlay lifecycle/dispose, tree navigation, settings/actions, chat delivery semantics, and package/test coverage for the new UI modules.
+
+### Changed
+
+- Changed `/zerg config` to launch the M9 interactive TUI through `ctx.ui.custom()` while preserving the M8 text management overlay fallback and the simple `/zerg monitor` path.
+- Reused existing audited command/state paths for read-only, automation mode, controller, permission approve/deny, interrupt, target selection, and intervention recording.
+- Bumped package manifest versions from `1.0.0-rc.10` to `1.0.0-rc.11` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-candidate wording, runtime/help strings, package inclusion, and matching tests from `v1.0.0-rc.10` to `v1.0.0-rc.11`.
+
+### Known Limitations
+
+- Manual Pi host smoke for `/zerg config` was not run in this environment, so this candidate is locally validated but not release-complete until interactive host verification passes.
+- Delivered chat/process transport remains unavailable; UI messages are recorded as local/unavailable or intervention-recorded only.
+- The interactive TUI uses structural component composition and line rendering; it does not add new external network/subprocess transport.
+
 ## [1.0.0-rc.10] - 2026-05-14
 
 ### Added

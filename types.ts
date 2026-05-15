@@ -456,6 +456,31 @@ export interface StructuralPiTuiHandle {
 
 export type ZergConfigOverlayTab = 'monitor' | 'control' | 'targets' | 'permissions' | 'lifecycle' | 'logs' | 'intervene' | 'config';
 
+export type ZergManagementPaneId = 'tree' | 'detail' | 'settings' | 'chat';
+export type ZergManagementTargetKind = 'agent' | 'team' | 'task';
+export type ZergOperatorMessageDeliveryStatus = 'draft' | 'queued-local' | 'transport-unavailable' | 'intervention-recorded';
+
+export interface ZergOperatorMessageRecord {
+  id: string;
+  targetId: string;
+  targetKind: ZergManagementTargetKind;
+  routedTargetId?: string;
+  body: string;
+  status: ZergOperatorMessageDeliveryStatus;
+  statusDetail: string;
+  createdAt: string;
+}
+
+export interface ZergManagementUiState {
+  focusedPane: ZergManagementPaneId;
+  selectedTargetId?: string;
+  selectedTargetKind?: ZergManagementTargetKind;
+  expandedNodeIds: string[];
+  chatDraft: string;
+  statusMessage?: string;
+  messages: ZergOperatorMessageRecord[];
+}
+
 export type StructuralPiCustomFactory = (
   tui?: StructuralPiTuiHandle,
   theme?: unknown,
