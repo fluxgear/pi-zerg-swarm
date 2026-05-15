@@ -59,7 +59,7 @@ export function handleChatBackspace(uiState: ZergManagementUiState): void {
   backspaceDraft(uiState);
 }
 
-export function renderChatPane(state: ZergState, uiState: ZergManagementUiState, width: number, height: number): string[] {
+export function renderChatPane(state: ZergState, uiState: ZergManagementUiState, width: number, height: number, composerLines?: readonly string[]): string[] {
   const selected = resolveSelectedTarget(state, uiState);
   const targetLabel = selected ? `${selected.kind} ${selected.id}` : 'none';
   const lines = [
@@ -79,7 +79,11 @@ export function renderChatPane(state: ZergState, uiState: ZergManagementUiState,
     }
   }
   lines.push('');
-  lines.push(`draft: ${uiState.chatDraft || '(empty)'}`);
-  lines.push('type in chat focus | enter send | x cancel | backspace edits');
+  if (composerLines && composerLines.length > 0) {
+    lines.push(...composerLines.map((line) => `draft: ${line}`));
+  } else {
+    lines.push(`draft: ${uiState.chatDraft || '(empty)'}`);
+  }
+  lines.push('type in chat focus | enter send | ctrl+x cancel | esc close');
   return renderPane(lines, { title: 'Conversation / operator message', focused: uiState.focusedPane === 'chat', width, height });
 }

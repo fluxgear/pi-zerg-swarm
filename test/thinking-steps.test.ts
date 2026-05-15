@@ -607,7 +607,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.11 internal patch unavailable; command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -620,11 +620,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.11 internal patch unavailable; command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.0 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.0-rc.11 internal patch unavailable; command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.0 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -1306,7 +1306,7 @@ test('createZergCommandHandler applies mode status transitions and revert', () =
 
   const readOnlyStatus = readOnlyHandler('/zerg mode status');
   assert.equal(readOnlyStatus.ok, true);
-  assert.ok(readOnlyStatus.output.includes('zerg v1.0.0-rc.11 command surface'));
+  assert.ok(readOnlyStatus.output.includes('zerg v1.0.0 command surface'));
   assert.ok(readOnlyStatus.output.includes('control operator'));
   assert.ok(readOnlyStatus.output.includes('mode manual'));
   assert.ok(readOnlyStatus.output.includes('no active intervention'));
@@ -1515,7 +1515,7 @@ test('render surfaces expose control intervention status tree markers and help s
   assert.ok(idleStatus.includes('control operator'));
   assert.ok(idleStatus.includes('mode manual'));
   assert.ok(idleStatus.includes('no active intervention'));
-  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.0-rc.11 command-surface scaffold');
+  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.0 command-surface scaffold');
   assert.ok(idleHelp.includes('Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]'));
   assert.ok(idleHelp.includes('Monitor syntax: /zerg monitor [readonly on|off|toggle|status]'));
   assert.ok(idleHelp.includes('Registry syntax: /zerg agents [list] | /zerg agents show <id>'));
@@ -1582,7 +1582,7 @@ test('renderMonitor combines monitor header, runtime status, tree, and recent ev
   const monitor = renderMonitor(state, { width: 240, recentEventCount: 2 });
 
   assert.ok(monitor.includes('zerg monitor'));
-  assert.ok(monitor.includes('status: zerg v1.0.0-rc.11 command surface'));
+  assert.ok(monitor.includes('status: zerg v1.0.0 command surface'));
   assert.ok(monitor.includes('read-only: enabled'));
   assert.ok(monitor.includes('tree:'));
   assert.ok(monitor.includes('recent events:'));
@@ -2573,27 +2573,22 @@ test('createPiZergCommandHandler renders monitor through real custom overlay opt
   container.update((state) => ({ metadata: { ...state.metadata, updatedAt: '2026-05-07T00:01:00.000Z' } }));
   assert.equal(requestRenderCount, 1);
 
-  const legacyRendered: string[] = [];
-  const legacyContext = {
-    ui: {
-      custom: (render: (width: number) => string, options?: Record<string, unknown>) => {
-        legacyRendered.push(render(100));
-        assert.equal(options?.mode, 'overlay');
-        assert.equal(options?.title, 'zerg monitor');
-      },
-      notify: (message: string) => {
-        notifications.push(message);
-      },
-    },
-  };
-
+  const fallbackRendered: string[] = [];
+  let rejectedFirstOverlayCall = false;
   const throwingNewApiContext = {
     ui: {
-      custom: (renderOrFactory: unknown, options?: Record<string, unknown>) => {
-        if (typeof renderOrFactory === 'function' && options?.overlay === true) {
+      custom: (factory: unknown, options?: Record<string, unknown>) => {
+        if (typeof factory === 'function' && options?.overlay === true && !rejectedFirstOverlayCall) {
+          rejectedFirstOverlayCall = true;
           throw new Error('legacy custom implementation');
         }
-        return legacyContext.ui.custom(renderOrFactory as (width: number) => string, options);
+        const fallbackComponent = (factory as (
+          tui?: { requestRender?(): void },
+          theme?: unknown,
+          keybindings?: unknown,
+          done?: () => void,
+        ) => { render(width?: number): string[]; invalidate(): void; handleInput?(data: string): void })(undefined, undefined, undefined, () => undefined);
+        fallbackRendered.push(fallbackComponent.render(100).join('\n'));
       },
       notify: (message: string) => {
         notifications.push(message);
@@ -2602,7 +2597,8 @@ test('createPiZergCommandHandler renders monitor through real custom overlay opt
   };
 
   await handler('/zerg monitor', throwingNewApiContext as StructuralPiCommandContext);
-  assert.equal(legacyRendered.length, 1);
+  assert.equal(fallbackRendered.length, 1);
+  assert.ok(fallbackRendered[0]?.includes('zerg monitor'));
 
   const fallbackContext = {
     ui: {
@@ -2882,7 +2878,7 @@ test('render monitoring summarizes runtime health activity without mutation', ()
   const status = renderStatusLine(state, { width: 240 });
   const tree = renderAgentTree(state, { width: 240 });
 
-  assert.ok(status.includes('zerg v1.0.0-rc.11 command surface'));
+  assert.ok(status.includes('zerg v1.0.0 command surface'));
   assert.ok(status.includes('agents 1 (1 running)'));
   assert.ok(status.includes('teams 1 (0 running)'));
   assert.ok(status.includes('unhealthy 1'));
@@ -3122,7 +3118,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.11 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v1.0.0 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -3142,8 +3138,8 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
   try {
     assert.equal(registration.patchInstalled, true);
     assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
-    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.11 internal patch path active']);
-    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.0-rc.11 internal patch path active']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.0 internal patch path active']);
+    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.0 internal patch path active']);
 
     eventBus.emit('zerg:smoke');
 
@@ -3167,7 +3163,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
     });
 
     assert.equal(notifications.length, 1);
-    assert.ok(notifications[0]?.message.includes('zerg v1.0.0-rc.11 command surface'));
+    assert.ok(notifications[0]?.message.includes('zerg v1.0.0 command surface'));
     assert.equal(notifications[0]?.type, 'info');
   } finally {
     registration.dispose();

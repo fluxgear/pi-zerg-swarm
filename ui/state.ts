@@ -1,3 +1,4 @@
+import { decodeKittyPrintable, matchesKey as matchesPiKey, type KeyId } from '@earendil-works/pi-tui';
 import type { ZergManagementPaneId, ZergManagementTargetKind, ZergManagementUiState, ZergOperatorMessageDeliveryStatus, ZergOperatorMessageRecord } from '../types.js';
 
 export const MANAGEMENT_PANES: ZergManagementPaneId[] = ['tree', 'detail', 'settings', 'chat'];
@@ -80,25 +81,28 @@ export function addOperatorMessage(
 
 export function matchesKey(data: string, ...keys: string[]): boolean {
   return keys.some((key) => {
-    if (data === key) {
-      return true;
-    }
-    if (key === 'up') return data === '\u001b[A';
-    if (key === 'down') return data === '\u001b[B';
-    if (key === 'right') return data === '\u001b[C';
-    if (key === 'left') return data === '\u001b[D';
-    if (key === 'escape') return data === '\u001b';
-    if (key === 'tab') return data === '\t';
-    if (key === 'shift-tab') return data === '\u001b[Z';
-    if (key === 'enter') return data === '\r' || data === '\n';
-    if (key === 'backspace') return data === '\u007f' || data === '\b';
-    return false;
+    const normalized = normalizeKeyId(key);
+    return data === key || data === normalized || matchesLegacySequence(data, normalized) || matchesPiKey(data, normalized);
   });
 }
 
 export function printableInput(data: string): string | undefined {
-  if (data.length === 1 && data >= ' ' && data !== '\u007f') {
-    return data;
-  }
-  return undefined;
+  return decodeKittyPrintable(data) ?? (data.length === 1 && data >= ' ' && data !== '\u007f' ? data : undefined);
+}
+
+function normalizeKeyId(key: string): KeyId {
+  return (key === 'shift-tab' ? 'shift+tab' : key) as KeyId;
+}
+
+function matchesLegacySequence(data: string, key: KeyId): boolean {
+  if (key === 'up') return data === '\u001b[A';
+  if (key === 'down') return data === '\u001b[B';
+  if (key === 'right') return data === '\u001b[C';
+  if (key === 'left') return data === '\u001b[D';
+  if (key === 'escape') return data === '\u001b';
+  if (key === 'tab') return data === '\t';
+  if (key === 'shift+tab') return data === '\u001b[Z';
+  if (key === 'enter') return data === '\r' || data === '\n';
+  if (key === 'backspace') return data === '\u007f' || data === '\b';
+  return false;
 }

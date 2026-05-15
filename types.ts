@@ -444,14 +444,17 @@ export interface ZergInternalPatchController {
 export type ZergCommandHandler = (input?: string) => ZergCommandResult | string | Promise<ZergCommandResult | string>;
 
 export interface StructuralPiCustomComponent {
-  render(width?: number, height?: number): string[];
+  render(width?: number): string[];
   invalidate(): void;
   handleInput?(data: string): unknown;
   dispose?(): void;
+  focused?: boolean;
+  wantsKeyRelease?: boolean;
 }
 
 export interface StructuralPiTuiHandle {
-  requestRender?(): void;
+  terminal?: { rows?: number; columns?: number };
+  requestRender?(force?: boolean): void;
 }
 
 export type ZergConfigOverlayTab = 'monitor' | 'control' | 'targets' | 'permissions' | 'lifecycle' | 'logs' | 'intervene' | 'config';
@@ -485,7 +488,7 @@ export type StructuralPiCustomFactory = (
   tui?: StructuralPiTuiHandle,
   theme?: unknown,
   keybindings?: unknown,
-  done?: () => void,
+  done?: (result?: unknown) => void,
 ) => StructuralPiCustomComponent | Promise<StructuralPiCustomComponent>;
 
 export interface StructuralPiCustomOptions {
@@ -502,7 +505,7 @@ export interface StructuralPiCommandContext {
     custom?(
       render: StructuralPiCustomFactory | ((width: number) => string),
       options?: StructuralPiCustomOptions | Record<string, unknown>,
-    ): { close?(): void; dispose?(): void } | unknown;
+    ): Promise<unknown> | { close?(): void; dispose?(): void } | unknown;
   };
 }
 

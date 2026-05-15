@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-15
+
+### Changed
+
+- Finalized the stable `v1.0.0` release after the M9 interactive management TUI implementation.
+- Aligned `/zerg config` with the working Pi overlay pattern from `pi-jarvis`: the overlay launch is awaited, rendering uses the real single-argument component contract, key handling uses Pi TUI key helpers, and chat composition uses the Pi TUI `Input` component with focus/cursor support.
+- Bumped package manifest versions from `1.0.0-rc.11` to `1.0.0` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-release wording, runtime/help strings, and matching tests from `v1.0.0-rc.11` to `v1.0.0`.
+
+### Known Limitations
+
+- Delivered chat/process transport remains future scope; operator messages are recorded as local/unavailable or intervention-recorded only.
+- External network/subprocess transport was not added for the stable release.
+
 ## [1.0.0-rc.11] - 2026-05-14
 
 ### Added

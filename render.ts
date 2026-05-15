@@ -171,7 +171,7 @@ export function renderStatusLine(state: ZergState, options: RenderOptions = {}):
   const permissions = ` | permissions ${permissionQueue.pendingCount} pending`;
 
   return fit(
-    `zerg v1.0.0-rc.11 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${permissions}${activeIntervention}`,
+    `zerg v1.0.0 command surface | agents ${agents.length} (${runningAgents} running) | teams ${teams.length} (${runningTeams} running) | tasks ${tasks.length} | blocked ${blocked} | unhealthy ${unhealthy}${activity} | ${control} | ${mode}${permissions}${activeIntervention}`,
     options.width,
   );
 }
@@ -526,7 +526,7 @@ export function renderAgentTree(state: ZergState, options: RenderOptions = {}): 
 
 export function renderHelp(state: ZergState, options: RenderOptions = {}): string {
   return [
-    'pi-zerg-swarm v1.0.0-rc.11 command-surface scaffold',
+    'pi-zerg-swarm v1.0.0 command-surface scaffold',
     `Commands: ${ZERG_COMMAND_INVOCATIONS.join(', ')}`,
     renderStatusLine(state, options),
     '',

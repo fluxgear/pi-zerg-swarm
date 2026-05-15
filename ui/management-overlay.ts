@@ -1,10 +1,11 @@
+import { Input, type Component, type Focusable } from '@earendil-works/pi-tui';
 import type { AutomationMode, StructuralPiCommandContext, StructuralPiCustomComponent, StructuralPiTuiHandle, ZergControlController, ZergManagementTargetKind, ZergManagementUiState, ZergOperatorMessageDeliveryStatus, ZergState } from '../types.js';
-import { columns, fitLine } from './components.js';
-import { ChatPaneActions, cancelChatDraft, handleChatBackspace, renderChatPane, sendChatDraft, updateChatDraftFromInput } from './chat-pane.js';
+import { columns, fitLine, fitRawLine } from './components.js';
+import { ChatPaneActions, cancelChatDraft, renderChatPane, sendChatDraft } from './chat-pane.js';
 import { renderDetailPane } from './detail-pane.js';
 import { renderManagementFooter } from './footer.js';
 import { SettingsPaneActions, applyPermissionFromSettings, createSettingsPaneState, cycleController, movePendingPermissionCursor, renderSettingsPane } from './settings-pane.js';
-import { MANAGEMENT_PANES, createManagementUiState, matchesKey, movePaneFocus, printableInput } from './state.js';
+import { MANAGEMENT_PANES, createManagementUiState, matchesKey, movePaneFocus } from './state.js';
 import { activateTreeSelection, buildManagementTreeRows, collapseTreeSelection, createTreePaneState, expandTreeSelection, moveTreeCursor, renderTreePane } from './tree-pane.js';
 
 export interface ZergManagementOverlayActions extends SettingsPaneActions, ChatPaneActions {
@@ -19,9 +20,9 @@ export interface ZergManagementOverlayOptions {
   actions: ZergManagementOverlayActions;
 }
 
-export function openZergManagementOverlay(context: StructuralPiCommandContext, options: ZergManagementOverlayOptions): void {
-  context.ui?.custom?.(
-    (tui?: StructuralPiTuiHandle, _theme?: unknown, _keybindings?: unknown, done?: () => void) => new ZergManagementOverlayComponent(tui, done, options),
+export async function openZergManagementOverlay(context: StructuralPiCommandContext, options: ZergManagementOverlayOptions): Promise<void> {
+  await Promise.resolve(context.ui?.custom?.(
+    (tui?: StructuralPiTuiHandle, _theme?: unknown, _keybindings?: unknown, done?: (result?: void) => void) => new ZergManagementOverlayComponent(tui, () => done?.(undefined), options),
     {
       overlay: true,
       overlayOptions: {
@@ -32,13 +33,15 @@ export function openZergManagementOverlay(context: StructuralPiCommandContext, o
         minWidth: 72,
       },
     },
-  );
+  ));
 }
 
-export class ZergManagementOverlayComponent implements StructuralPiCustomComponent {
+export class ZergManagementOverlayComponent implements StructuralPiCustomComponent, Component, Focusable {
+  focused = false;
   private readonly uiState: ZergManagementUiState = createManagementUiState();
   private readonly treeState = createTreePaneState();
   private readonly settingsState = createSettingsPaneState();
+  private readonly chatInput = new Input();
   private disposed = false;
   private unsubscribe: () => void;
   private cachedWidth?: number;
@@ -50,10 +53,19 @@ export class ZergManagementOverlayComponent implements StructuralPiCustomCompone
     private readonly done: (() => void) | undefined,
     private readonly options: ZergManagementOverlayOptions,
   ) {
+    this.chatInput.onSubmit = (value) => {
+      this.uiState.chatDraft = value;
+      this.uiState.statusMessage = sendChatDraft(this.options.getSnapshot(), this.uiState, this.options.actions);
+      this.chatInput.setValue('');
+    };
+    this.chatInput.onEscape = () => {
+      this.dispose();
+    };
     this.unsubscribe = options.subscribe(() => this.requestRender());
   }
 
-  render(width = 120, height = 32): string[] {
+  render(width = 120): string[] {
+    const height = this.resolveHeight();
     if (this.cachedLines && this.cachedWidth === width && this.cachedHeight === height) {
       return this.cachedLines;
     }
@@ -70,14 +82,16 @@ export class ZergManagementOverlayComponent implements StructuralPiCustomCompone
     const tree = renderTreePane(snapshot, this.uiState, this.treeState, leftWidth, topHeight);
     const detail = renderDetailPane(snapshot, this.uiState, rightWidth, topHeight);
     const settings = renderSettingsPane(snapshot, this.uiState, this.settingsState, this.options.adapterKind, leftWidth, bottomHeight);
-    const chat = renderChatPane(snapshot, this.uiState, rightWidth, bottomHeight);
+    this.chatInput.focused = this.focused && this.uiState.focusedPane === 'chat';
+    const composerLines = this.chatInput.render(Math.max(8, rightWidth - 12));
+    const chat = renderChatPane(snapshot, this.uiState, rightWidth, bottomHeight, composerLines);
     const body = [
       ...columns(tree, detail, safeWidth),
       ...columns(settings, chat, safeWidth),
     ];
     this.cachedWidth = width;
     this.cachedHeight = height;
-    this.cachedLines = [...header, ...body, '', ...footer].map((line) => fitLine(line, safeWidth)).slice(0, safeHeight);
+    this.cachedLines = [...header, ...body, '', ...footer].map((line) => fitRawLine(line, safeWidth)).slice(0, safeHeight);
     return this.cachedLines;
   }
 
@@ -148,6 +162,11 @@ export class ZergManagementOverlayComponent implements StructuralPiCustomCompone
     };
   }
 
+  private resolveHeight(): number {
+    const rows = typeof this.tui?.terminal?.rows === 'number' ? this.tui.terminal.rows : 32;
+    return Math.max(18, Math.floor(rows * 0.88));
+  }
+
   private requestRender(): void {
     if (this.disposed) return;
     this.invalidate();
@@ -155,7 +174,7 @@ export class ZergManagementOverlayComponent implements StructuralPiCustomCompone
   }
 
   private isChatTextInput(data: string): boolean {
-    return matchesKey(data, 'enter', 'backspace') || data === 'x' || data === 'X' || printableInput(data) !== undefined;
+    return !matchesKey(data, 'tab', 'shift-tab');
   }
 
   private handleGlobalAction(data: string): boolean {
@@ -231,20 +250,19 @@ export class ZergManagementOverlayComponent implements StructuralPiCustomCompone
 
   private handleChatInput(data: string): void {
     if (matchesKey(data, 'enter')) {
+      this.uiState.chatDraft = this.chatInput.getValue();
       this.uiState.statusMessage = sendChatDraft(this.options.getSnapshot(), this.uiState, this.options.actions);
+      this.chatInput.setValue('');
       return;
     }
-    if (data === 'x' || data === 'X') {
+    if (matchesKey(data, 'ctrl+x')) {
+      this.chatInput.setValue('');
       this.uiState.statusMessage = cancelChatDraft(this.uiState);
       return;
     }
-    if (matchesKey(data, 'backspace')) {
-      handleChatBackspace(this.uiState);
-      return;
-    }
-    const printable = printableInput(data);
-    if (printable) {
-      updateChatDraftFromInput(this.uiState, printable);
+    this.chatInput.handleInput(data);
+    this.uiState.chatDraft = this.chatInput.getValue();
+    if (this.uiState.chatDraft) {
       this.uiState.statusMessage = 'editing chat draft';
     }
   }

@@ -1,3 +1,4 @@
+import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import type { AgentStatus, ZergRuntimeHealth } from '../types.js';
 
 export interface RenderPaneOptions {
@@ -25,10 +26,7 @@ export function fitLine(value: string, width: number): string {
 
 export function fitRawLine(value: string, width: number): string {
   const safeWidth = Math.max(1, Math.floor(width));
-  if (value.length <= safeWidth) {
-    return value.padEnd(safeWidth, ' ');
-  }
-  return `${value.slice(0, Math.max(0, safeWidth - 1))}…`;
+  return truncateToWidth(value, safeWidth, '', true);
 }
 
 export function renderPane(lines: readonly string[], options: RenderPaneOptions): string[] {
@@ -37,7 +35,7 @@ export function renderPane(lines: readonly string[], options: RenderPaneOptions)
   const border = `${options.focused ? '╔' : '┌'}${'═'.repeat(Math.max(0, width - 2))}${options.focused ? '╗' : '┐'}`;
   const bottom = `${options.focused ? '╚' : '└'}${'═'.repeat(Math.max(0, width - 2))}${options.focused ? '╝' : '┘'}`;
   const bodyHeight = options.height === undefined ? lines.length : Math.max(0, options.height - 3);
-  const body = lines.slice(0, bodyHeight).map((line) => `│${fitLine(line, width - 2)}│`);
+  const body = lines.slice(0, bodyHeight).map((line) => `│${fitRawLine(line, width - 2)}│`);
   while (body.length < bodyHeight) {
     body.push(`│${' '.repeat(Math.max(0, width - 2))}│`);
   }
@@ -55,6 +53,10 @@ export function columns(left: readonly string[], right: readonly string[], width
     output.push(`${fitRawLine(left[index] ?? '', leftWidth)}${gap}${fitRawLine(right[index] ?? '', rightWidth)}`);
   }
   return output;
+}
+
+export function displayWidth(value: string): number {
+  return visibleWidth(value);
 }
 
 export function statusGlyph(status?: AgentStatus | string): string {

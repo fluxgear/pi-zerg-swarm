@@ -159,8 +159,8 @@ export function registerZergSwarmExtension(
     patch.emit({
       type: 'hook',
       message: patch.installed
-        ? 'pi-zerg-swarm v1.0.0-rc.11 internal patch path active'
-        : 'pi-zerg-swarm v1.0.0-rc.11 internal patch unavailable; command surface registered',
+        ? 'pi-zerg-swarm v1.0.0 internal patch path active'
+        : 'pi-zerg-swarm v1.0.0 internal patch unavailable; command surface registered',
       status: patch.installed ? 'running' : 'done',
     });
   } catch (error) {
@@ -2758,7 +2758,7 @@ export function createPiZergCommandHandler(
     if ((normalized.topic === 'monitor' || normalized.topic === 'config') && context.ui?.custom) {
       if (normalized.topic === 'config') {
         try {
-          openZergManagementOverlay(context, {
+          await openZergManagementOverlay(context, {
             getSnapshot: () => resolveZergStateSnapshot(stateOrReader),
             subscribe: (listener) => subscribeToZergState(stateOrReader, listener),
             adapterKind: runtimeOptions.subagentAdapter?.kind ?? 'unavailable',
@@ -2990,9 +2990,9 @@ export function createPiZergCommandHandler(
             };
 
             return {
-              render: (width?: number, height?: number) => {
+              render: (width?: number) => {
                 invalidated = false;
-                return renderOverlayOutput(width, height).split('\n');
+                return renderOverlayOutput(width).split('\n');
               },
               invalidate: () => {
                 invalidated = true;
@@ -3043,10 +3043,23 @@ export function createPiZergCommandHandler(
         return;
       } catch {
         try {
-          context.ui.custom((width: number) => renderOverlayOutput(width), {
-            mode: 'overlay',
-            title: overlayTopic === 'monitor' ? 'zerg monitor' : 'zerg config',
-          });
+          await Promise.resolve(context.ui.custom(
+            (_tui?: StructuralPiTuiHandle, _theme?: unknown, _keybindings?: unknown, done?: (result?: void) => void) => ({
+              render: (width?: number) => renderOverlayOutput(width).split('\n'),
+              invalidate: () => undefined,
+              handleInput: (data: string) => {
+                if (data === 'q' || data === 'Q' || data === '\u001b') {
+                  done?.(undefined);
+                }
+              },
+            }),
+            {
+              overlay: true,
+              overlayOptions: {
+                title: overlayTopic === 'monitor' ? 'zerg monitor' : 'zerg config',
+              },
+            },
+          ));
           return;
         } catch {
           // Fall back to textual output when custom overlay hooks are unavailable.

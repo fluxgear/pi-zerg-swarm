@@ -91,5 +91,5 @@ test('M9 management overlay routes focus and chat keys through focused pane', ()
   const rendered = component?.render(110, 30).join('\n') ?? '';
   assert.ok(rendered.includes('intervention-recorded'));
   assert.ok(rendered.includes('remote rapid quorum'));
-  assert.ok((component?.render(110, 18) ?? []).length <= 18);
+  assert.ok((component?.render(110) ?? []).length <= 32);
 });
