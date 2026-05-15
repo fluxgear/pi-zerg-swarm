@@ -536,7 +536,7 @@ export function renderHelp(state: ZergState, options: RenderOptions = {}): strin
     'Control syntax: /zerg control status|controller pi|zerg|operator|readonly on|off|toggle|mode manual|assisted|automatic',
     'Permission syntax: /zerg permission status|list [all|pending|resolved]|request <kind> <target> <summary>|approve <id> [reason]|deny <id> [reason]|cancel <id> [reason]',
     'Logs syntax: /zerg logs status|list [--run <id>] [--level debug|info|warn|error] [--limit <n>] | /zerg logs show <id|run-id> [--json] | /zerg logs json [--run <id>] [--limit <n>]',
-    'Registry syntax: /zerg agents [list] | /zerg agents show <id>',
+    'Registry syntax: /zerg agents [list] | show <id> | create|update <id> --prompt <text> [--model <model>] [--tools a,b] | delete <id>',
     'Config syntax: /zerg config opens the Pi overlay configuration window when available',
     'Run syntax: /zerg run <agent> <task> [--bg] [--fresh|--fork] (fresh is default isolated launch; fork requests inherited context where supported) | /zerg runs [list] | /zerg runs show <run-id> | /zerg interrupt [run-id]',
     'Monitor syntax: /zerg monitor [readonly on|off|toggle|status]',
@@ -593,7 +593,9 @@ export function renderAgentDefinitionsList(definitions: ZergAgentDefinition[], o
   for (const definition of definitions) {
     const promptHint = definition.prompt.trim();
     const suffix = definition.description || (promptHint ? `prompt: ${promptHint.slice(0, 32)}${promptHint.length > 32 ? '…' : ''}` : 'no prompt');
-    const line = `- ${definition.id} (${definition.source}) ${definition.label} | ${suffix}`;
+    const model = definition.model ? ` model:${definition.model}` : '';
+    const maxTurns = definition.maxTurns ? ` max-turns:${definition.maxTurns}` : '';
+    const line = `- ${definition.id} (${definition.source}) ${definition.label}${model}${maxTurns} | ${suffix}`;
     lines.push(line);
   }
 
@@ -607,6 +609,9 @@ export function renderAgentDefinitionSummary(definition: ZergAgentDefinition, op
     `label: ${definition.label}`,
     `source: ${definition.source}`,
     `description: ${definition.description ?? 'none'}`,
+    `model: ${definition.model ?? 'default'}`,
+    `fallback-models: ${definition.fallbackModels?.join(', ') || 'none'}`,
+    `max-turns: ${definition.maxTurns ?? 'default'}`,
     `tools: ${definition.tools?.join(', ') || 'default'}`,
     `disallowed-tools: ${definition.disallowedTools?.join(', ') || 'none'}`,
     `permission-mode: ${definition.permissionMode ?? 'inherit'}`,
@@ -629,9 +634,10 @@ export function renderZergSubagentRunList(runs: readonly ZergSubagentRunSnapshot
     const label = run.agentLabel ? ` label:${run.agentLabel}` : '';
     const launchMode = run.launchMode ? ` mode:${run.launchMode}` : '';
     const taskId = run.taskId ? ` task-id:${run.taskId}` : '';
+    const model = typeof run.metadata?.model === 'string' ? ` model:${run.metadata.model}` : '';
     const substate = run.substate ? `/${run.substate}` : '';
     const startedAt = run.startedAt ? ` started:${run.startedAt}` : '';
-    lines.push(`- ${run.runId} (${run.status}${substate}) agent:${run.agentId}${label}${launchMode}${task}${taskId}${startedAt}`);
+    lines.push(`- ${run.runId} (${run.status}${substate}) agent:${run.agentId}${label}${launchMode}${model}${task}${taskId}${startedAt}`);
   }
 
   return lines.map((line) => fit(line, width)).join('\n');
@@ -647,6 +653,9 @@ export function renderZergSubagentRunSummary(run: ZergSubagentRunSnapshot, optio
     ...(run.substateReason ? [`substate-reason: ${sanitizeRuntimeActivity(run.substateReason)}`] : []),
     ...(run.taskId ? [`task-id: ${run.taskId}`] : []),
     ...(run.launchMode ? [`launch-mode: ${run.launchMode}`] : []),
+    `model: ${typeof run.metadata?.model === 'string' ? run.metadata.model : 'default'}`,
+    `fallback-models: ${Array.isArray(run.metadata?.fallbackModels) ? run.metadata.fallbackModels.join(', ') : 'none'}`,
+    `max-turns: ${typeof run.metadata?.maxTurns === 'number' ? run.metadata.maxTurns : 'default'}`,
     `task: ${run.task ?? 'none'}`,
     `started-at: ${run.startedAt ?? 'unknown'}`,
     `updated-at: ${run.updatedAt ?? 'unknown'}`,

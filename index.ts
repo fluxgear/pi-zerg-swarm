@@ -2,8 +2,8 @@ import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
 import { openZergManagementOverlay } from './ui/management-overlay.js';
 import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderPermissionQueueStatus, renderStatusLine, renderZergLogList, renderZergLogStatus, renderZergLogSummary, renderZergManagementOverlay, renderZergSubagentRunList, renderZergSubagentRunSummary, type ZergManagementOverlayRow } from './render.js';
-import { appendZergLogRecord, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, getZergLogs, getZergLogState, readSharedZergState, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertTask, type ZergLogFilter } from './state.js';
-import { ZERG_COMMANDS, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergManagementTargetKind, type ZergOperatorMessageDeliveryStatus, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
+import { appendZergLogRecord, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, getZergLogs, getZergLogState, readSharedZergState, removeAgentDefinition, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertAgentDefinition, upsertTask, type ZergLogFilter } from './state.js';
+import { ZERG_COMMANDS, type AgentKind, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type TeamKind, type ZergAgentDefinition, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergManagementTargetKind, type ZergOperatorMessageDeliveryStatus, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
 
 type ZergIdFactory = {
   runId?: () => string;
@@ -252,7 +252,7 @@ export function createZergCommandHandler(
         : 'No thinking steps detected.';
       return { ok: true, output };
     },
-    agents: (payload: string) => dispatchAgentDefinitionsCommand(stateOrReader, payload),
+    agents: (payload: string) => dispatchAgentDefinitionsCommand(stateOrReader, payload, options),
     agent: (payload: string) => dispatchRuntimeCommand(stateOrReader, 'agent', payload, options),
     team: (payload: string) => dispatchRuntimeCommand(stateOrReader, 'team', payload, options),
     mode: (payload: string) => dispatchModeCommand(stateOrReader, payload, options),
@@ -329,6 +329,7 @@ function isZergCommandTopic(value: string): value is ZergCommandTopic {
 function dispatchAgentDefinitionsCommand(
   stateOrReader: ZergStateSource,
   payload: string,
+  options: RuntimeCommandOptions,
 ): ZergCommandResult {
   const snapshot = resolveZergStateSnapshot(stateOrReader);
   const definitions = getAgentDefinitions(snapshot);
@@ -363,10 +364,134 @@ function dispatchAgentDefinitionsCommand(
     };
   }
 
+  if (action === 'create' || action === 'update' || action === 'upsert') {
+    const container = getWritableStateContainer(stateOrReader);
+    if (!container) {
+      return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
+    }
+
+    const existing = action === 'create' ? undefined : getAgentDefinition(container.read(), tokens[1] ?? '');
+    const parsed = parseAgentDefinitionMutation(action, tokens.slice(1), existing);
+    if (!parsed.ok) {
+      return parsed;
+    }
+
+    const nextState = appendLogToState(upsertAgentDefinition(container.read(), parsed.definition), options, {
+      source: 'command',
+      level: 'info',
+      kind: 'text',
+      message: `agent definition ${parsed.definition.id} saved`,
+      agentId: parsed.definition.id,
+      data: { model: parsed.definition.model, fallbackModels: parsed.definition.fallbackModels, maxTurns: parsed.definition.maxTurns },
+    });
+    const updated = container.replace(nextState);
+    if (options.syncSharedState) {
+      replaceSharedZergState(updated);
+    }
+    return { ok: true, output: `agent definition ${parsed.definition.id} saved.\n${renderAgentDefinitionSummary(parsed.definition, { width: PI_COMMAND_OUTPUT_WIDTH })}` };
+  }
+
+  if (action === 'delete' || action === 'remove' || action === 'rm' || action === 'del') {
+    const id = tokens[1];
+    if (!id) {
+      return { ok: false, output: 'Usage: /zerg agents delete <id>' };
+    }
+    const container = getWritableStateContainer(stateOrReader);
+    if (!container) {
+      return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
+    }
+    const existing = getAgentDefinition(container.read(), id);
+    if (!existing) {
+      return { ok: false, output: `Unknown agent definition: ${id}` };
+    }
+    const updated = container.replace(removeAgentDefinition(container.read(), id));
+    if (options.syncSharedState) {
+      replaceSharedZergState(updated);
+    }
+    return { ok: true, output: `agent definition ${existing.id} deleted.` };
+  }
+
   return {
     ok: false,
-    output: `Unknown agents action: ${action}. Available: /zerg agents list, /zerg agents show <id>`,
+    output: `Unknown agents action: ${action}. Available: /zerg agents list, show <id>, create|update <id> --prompt <text> [--model <model>] [--tools a,b], delete <id>`,
   };
+}
+
+function parseAgentDefinitionMutation(
+  action: string,
+  tokens: string[],
+  existing?: ZergAgentDefinition,
+): { ok: false; output: string } | { ok: true; definition: ZergAgentDefinition } {
+  const id = tokens[0];
+  if (!id) {
+    return { ok: false, output: 'Usage: /zerg agents create <id> --prompt <text> [--label <label>] [--model <model>] [--tools a,b]' };
+  }
+
+  if (action === 'update' && !existing) {
+    return { ok: false, output: `Unknown agent definition: ${id}` };
+  }
+
+  const prompt = getOptionValue(tokens, '--prompt') ?? existing?.prompt;
+  if (!prompt?.trim()) {
+    return { ok: false, output: 'agent definition create/update requires --prompt <text>.' };
+  }
+
+  const permissionModeInput = getOptionValue(tokens, '--permission-mode') ?? getOptionValue(tokens, '--permission') ?? existing?.permissionMode;
+  if (permissionModeInput && !isAgentDefinitionPermissionMode(permissionModeInput)) {
+    return { ok: false, output: `Unknown permission mode: ${permissionModeInput}` };
+  }
+  const permissionMode = permissionModeInput && isAgentDefinitionPermissionMode(permissionModeInput) ? permissionModeInput : undefined;
+
+  const maxTurnsText = getOptionValue(tokens, '--max-turns') ?? getOptionValue(tokens, '--maxTurns');
+  const maxTurns = maxTurnsText ? Number(maxTurnsText) : existing?.maxTurns;
+  if (maxTurns !== undefined && (!Number.isSafeInteger(maxTurns) || maxTurns <= 0)) {
+    return { ok: false, output: '--max-turns must be a positive integer.' };
+  }
+
+  return {
+    ok: true,
+    definition: {
+      id,
+      label: getOptionValue(tokens, '--label') ?? existing?.label ?? id,
+      description: getOptionValue(tokens, '--description') ?? existing?.description,
+      prompt,
+      source: existing?.source ?? 'runtime',
+      model: getOptionValue(tokens, '--model') ?? existing?.model,
+      fallbackModels: parseCsvOption(getOptionValue(tokens, '--fallback-models') ?? getOptionValue(tokens, '--fallback')) ?? existing?.fallbackModels,
+      maxTurns,
+      tools: parseCsvOption(getOptionValue(tokens, '--tools') ?? getOptionValue(tokens, '--tool')) ?? existing?.tools,
+      disallowedTools: parseCsvOption(getOptionValue(tokens, '--disallowed-tools') ?? getOptionValue(tokens, '--disallow')) ?? existing?.disallowedTools,
+      permissionMode,
+      metadata: existing?.metadata,
+      extensions: existing?.extensions,
+    },
+  };
+}
+
+function getOptionValue(tokens: string[], name: string): string | undefined {
+  const equalsPrefix = `${name}=`;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === name) {
+      return tokens[index + 1];
+    }
+    if (token.startsWith(equalsPrefix)) {
+      return token.slice(equalsPrefix.length);
+    }
+  }
+  return undefined;
+}
+
+function parseCsvOption(value: string | undefined): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = value.split(',').map((part) => part.trim()).filter(Boolean);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function isAgentDefinitionPermissionMode(value: string): value is AutomationMode | 'inherit' {
+  return value === 'manual' || value === 'assisted' || value === 'automatic' || value === 'inherit';
 }
 
 function dispatchRuntimeCommand(
@@ -781,6 +906,9 @@ function dispatchRunCommand(
         task: parsed.request.task,
         launchMode,
         background: parsed.request.background,
+        model: parsed.request.model ?? resolvedDefinition?.model,
+        fallbackModels: parsed.request.fallbackModels ?? resolvedDefinition?.fallbackModels,
+        maxTurns: parsed.request.maxTurns ?? resolvedDefinition?.maxTurns,
       },
     }, { now: options.now ?? (() => new Date()) });
     const logged = appendLogToState(queued, options, {
@@ -814,6 +942,9 @@ function dispatchRunCommand(
   const resolvedAgentId = resolvedDefinition?.id ?? parsed.request.agent;
   const resolvedAgentLabel = resolvedDefinition?.label ?? parsed.request.agent;
 
+  const requestedModel = parsed.request.model ?? resolvedDefinition?.model;
+  const requestedFallbackModels = parsed.request.fallbackModels ?? resolvedDefinition?.fallbackModels;
+  const requestedMaxTurns = parsed.request.maxTurns ?? resolvedDefinition?.maxTurns;
   const request: ZergSubagentLaunchRequest = {
     ...parsed.request,
     agent: resolvedAgentId,
@@ -823,6 +954,9 @@ function dispatchRunCommand(
     taskId,
     agentDefinitionId: resolvedDefinition?.id,
     description: parsed.request.task,
+    ...(requestedModel ? { model: requestedModel } : {}),
+    ...(requestedFallbackModels?.length ? { fallbackModels: requestedFallbackModels } : {}),
+    ...(requestedMaxTurns ? { maxTurns: requestedMaxTurns } : {}),
   };
 
   const launchMetadata = {
@@ -831,6 +965,9 @@ function dispatchRunCommand(
     launchMode,
     ...(resolvedDefinition ? { agentDefinitionId: resolvedDefinition.id } : {}),
     agentDefinitionLabel: resolvedDefinition?.label,
+    ...(request.model ? { model: request.model } : {}),
+    ...(request.fallbackModels?.length ? { fallbackModels: request.fallbackModels } : {}),
+    ...(request.maxTurns ? { maxTurns: request.maxTurns } : {}),
   } as const;
 
   const taskRecord = {
@@ -879,7 +1016,7 @@ function dispatchRunCommand(
     runId,
     agentId: resolvedAgentId,
     taskId,
-    data: { launchMode, background: parsed.request.background },
+    data: { launchMode, background: parsed.request.background, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
   });
 
   const launchReadyState = container.replace(withLaunchLog);
@@ -898,7 +1035,7 @@ function dispatchRunCommand(
       runId,
       agentId: resolvedAgentId,
       taskId,
-      data: { launchMode },
+      data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
     });
     if (options.syncSharedState) {
       replaceSharedZergState(logged);
@@ -943,7 +1080,7 @@ function dispatchRunCommand(
     runId,
     agentId: resolvedAgentId,
     taskId,
-    data: { launchMode },
+    data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
   }));
   if (options.syncSharedState) {
     replaceSharedZergState(failedState);
@@ -1138,8 +1275,17 @@ function parseRunCommand(payload: string): { ok: false; output: string } | { ok:
   let launchMode: ZergSubagentLaunchMode = 'fresh';
   let sawFresh = false;
   let sawFork = false;
+  let model: string | undefined;
+  let fallbackModels: string[] | undefined;
+  let maxTurns: number | undefined;
   const filtered: string[] = [];
-  for (const token of tokens) {
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const modelValue = readOptionValue(tokens, index, '--model');
+    const fallbackValue = readOptionValue(tokens, index, '--fallback-models') ?? readOptionValue(tokens, index, '--fallback');
+    const maxTurnsValue = readOptionValue(tokens, index, '--max-turns') ?? readOptionValue(tokens, index, '--maxTurns');
+
     if (token === '--bg' || token === '--background') {
       background = true;
     } else if (token === '--fresh') {
@@ -1148,6 +1294,19 @@ function parseRunCommand(payload: string): { ok: false; output: string } | { ok:
     } else if (token === '--fork') {
       sawFork = true;
       launchMode = 'fork';
+    } else if (modelValue !== undefined) {
+      model = modelValue;
+      if (token === '--model') index += 1;
+    } else if (fallbackValue !== undefined) {
+      fallbackModels = parseCsvOption(fallbackValue);
+      if (token === '--fallback-models' || token === '--fallback') index += 1;
+    } else if (maxTurnsValue !== undefined) {
+      const parsed = Number(maxTurnsValue);
+      if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+        return { ok: false, output: '--max-turns must be a positive integer.' };
+      }
+      maxTurns = parsed;
+      if (token === '--max-turns' || token === '--maxTurns') index += 1;
     } else {
       filtered.push(token);
     }
@@ -1159,7 +1318,7 @@ function parseRunCommand(payload: string): { ok: false; output: string } | { ok:
 
   const [agent, ...taskTokens] = filtered;
   if (!agent) {
-    return { ok: false, output: 'Usage: /zerg run <agent> <task> [--bg] [--fresh|--fork]' };
+    return { ok: false, output: 'Usage: /zerg run <agent> <task> [--bg] [--fresh|--fork] [--model <model>]' };
   }
 
   const task = taskTokens.join(' ').trim();
@@ -1167,7 +1326,28 @@ function parseRunCommand(payload: string): { ok: false; output: string } | { ok:
     return { ok: false, output: 'zerg run requires a non-empty task.' };
   }
 
-  return { ok: true, request: { agent, task, background, fork: launchMode === 'fork', launchMode } };
+  return {
+    ok: true,
+    request: {
+      agent,
+      task,
+      background,
+      fork: launchMode === 'fork',
+      launchMode,
+      ...(model ? { model } : {}),
+      ...(fallbackModels?.length ? { fallbackModels } : {}),
+      ...(maxTurns ? { maxTurns } : {}),
+    },
+  };
+}
+
+function readOptionValue(tokens: string[], index: number, name: string): string | undefined {
+  const token = tokens[index]!;
+  if (token === name) {
+    return tokens[index + 1];
+  }
+  const prefix = `${name}=`;
+  return token.startsWith(prefix) ? token.slice(prefix.length) : undefined;
 }
 
 function parseLogFilters(tokens: string[]): LogsParseResult {
@@ -1410,7 +1590,13 @@ function parseRuntimeTransition(entity: ZergRuntimeEntity, payload: string): Run
     return parsedSubstate;
   }
 
-  const text = parsedSubstate.tokens.join(' ').trim();
+  const parsedOptions = parseRuntimeEntityOptions(entity, parsedSubstate.tokens);
+  if (!parsedOptions.ok) {
+    return parsedOptions;
+  }
+
+  const text = parsedOptions.tokens.join(' ').trim();
+  const metadata = buildRuntimeConfigMetadata(parsedOptions);
   const common = {
     action,
     id,
@@ -1418,13 +1604,142 @@ function parseRuntimeTransition(entity: ZergRuntimeEntity, payload: string): Run
     ...((action === 'progress' || action === 'fail') && text ? { activity: text } : {}),
     ...(parsedSubstate.substate ? { substate: parsedSubstate.substate } : {}),
     ...(parsedSubstate.substateReason ? { substateReason: parsedSubstate.substateReason } : {}),
+    ...(metadata ? { metadata } : {}),
   } as const;
 
   if (entity === 'agent') {
-    return { ok: true, transition: { entity: 'agent', ...common } };
+    return {
+      ok: true,
+      transition: {
+        entity: 'agent',
+        ...common,
+        ...(parsedOptions.kind && isRuntimeAgentKind(parsedOptions.kind) ? { kind: parsedOptions.kind } : {}),
+        ...(parsedOptions.team ? { teamId: parsedOptions.team } : {}),
+        ...(parsedOptions.parent ? { parentId: parsedOptions.parent } : {}),
+        ...(parsedOptions.children ? { childIds: parsedOptions.children } : {}),
+      },
+    };
   }
 
-  return { ok: true, transition: { entity: 'team', ...common } };
+  return {
+    ok: true,
+    transition: {
+      entity: 'team',
+      ...common,
+      ...(parsedOptions.kind && isRuntimeTeamKind(parsedOptions.kind) ? { kind: parsedOptions.kind } : {}),
+      ...(parsedOptions.leader ? { leaderAgentId: parsedOptions.leader } : {}),
+      ...(parsedOptions.members ? { memberAgentIds: parsedOptions.members } : {}),
+      ...(parsedOptions.parentTeam ? { parentTeamId: parsedOptions.parentTeam } : {}),
+      ...(parsedOptions.tasks ? { taskIds: parsedOptions.tasks } : {}),
+    },
+  };
+}
+
+interface RuntimeEntityOptions {
+  ok: true;
+  tokens: string[];
+  kind?: string;
+  leader?: string;
+  members?: string[];
+  parentTeam?: string;
+  tasks?: string[];
+  parent?: string;
+  team?: string;
+  children?: string[];
+  model?: string;
+  fallbackModels?: string[];
+  maxTurns?: number;
+  agentDefinitionId?: string;
+}
+
+type RuntimeEntityOptionsParseResult = RuntimeEntityOptions | { ok: false; output: string };
+
+function parseRuntimeEntityOptions(entity: ZergRuntimeEntity, tokens: string[]): RuntimeEntityOptionsParseResult {
+  const remaining: string[] = [];
+  const options: RuntimeEntityOptions = { ok: true, tokens: remaining };
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const kind = readOptionValue(tokens, index, '--kind');
+    const leader = readOptionValue(tokens, index, '--leader');
+    const members = readOptionValue(tokens, index, '--members') ?? readOptionValue(tokens, index, '--member');
+    const parentTeam = readOptionValue(tokens, index, '--parent-team');
+    const tasks = readOptionValue(tokens, index, '--tasks') ?? readOptionValue(tokens, index, '--task');
+    const parent = readOptionValue(tokens, index, '--parent');
+    const team = readOptionValue(tokens, index, '--team');
+    const children = readOptionValue(tokens, index, '--children') ?? readOptionValue(tokens, index, '--child');
+    const model = readOptionValue(tokens, index, '--model');
+    const fallbackModels = readOptionValue(tokens, index, '--fallback-models') ?? readOptionValue(tokens, index, '--fallback');
+    const maxTurns = readOptionValue(tokens, index, '--max-turns') ?? readOptionValue(tokens, index, '--maxTurns');
+    const agentDefinitionId = readOptionValue(tokens, index, '--agent-definition') ?? readOptionValue(tokens, index, '--agent-def');
+
+    if (kind !== undefined) {
+      if (entity === 'agent' && !isRuntimeAgentKind(kind)) return { ok: false, output: `Unknown agent kind: ${kind}` };
+      if (entity === 'team' && !isRuntimeTeamKind(kind)) return { ok: false, output: `Unknown team kind: ${kind}` };
+      options.kind = kind;
+      if (token === '--kind') index += 1;
+    } else if (leader !== undefined) {
+      if (!leader || leader.startsWith('--')) return { ok: false, output: 'Usage: --leader <agent-id>' };
+      options.leader = leader;
+      if (token === '--leader') index += 1;
+    } else if (members !== undefined) {
+      const parsed = parseCsvOption(members);
+      if (!parsed) return { ok: false, output: 'Usage: --members <agent-id>[,<agent-id>...]' };
+      options.members = [...new Set([...(options.members ?? []), ...parsed])];
+      if (token === '--members' || token === '--member') index += 1;
+    } else if (parentTeam !== undefined) {
+      options.parentTeam = parentTeam;
+      if (token === '--parent-team') index += 1;
+    } else if (tasks !== undefined) {
+      options.tasks = [...new Set([...(options.tasks ?? []), ...(parseCsvOption(tasks) ?? [])])];
+      if (token === '--tasks' || token === '--task') index += 1;
+    } else if (parent !== undefined) {
+      options.parent = parent;
+      if (token === '--parent') index += 1;
+    } else if (team !== undefined) {
+      options.team = team;
+      if (token === '--team') index += 1;
+    } else if (children !== undefined) {
+      options.children = [...new Set([...(options.children ?? []), ...(parseCsvOption(children) ?? [])])];
+      if (token === '--children' || token === '--child') index += 1;
+    } else if (model !== undefined) {
+      options.model = model;
+      if (token === '--model') index += 1;
+    } else if (fallbackModels !== undefined) {
+      options.fallbackModels = parseCsvOption(fallbackModels);
+      if (token === '--fallback-models' || token === '--fallback') index += 1;
+    } else if (maxTurns !== undefined) {
+      const parsed = Number(maxTurns);
+      if (!Number.isSafeInteger(parsed) || parsed <= 0) return { ok: false, output: '--max-turns must be a positive integer.' };
+      options.maxTurns = parsed;
+      if (token === '--max-turns' || token === '--maxTurns') index += 1;
+    } else if (agentDefinitionId !== undefined) {
+      options.agentDefinitionId = agentDefinitionId;
+      if (token === '--agent-definition' || token === '--agent-def') index += 1;
+    } else {
+      remaining.push(token);
+    }
+  }
+
+  return options;
+}
+
+function buildRuntimeConfigMetadata(options: RuntimeEntityOptions): Record<string, unknown> | undefined {
+  const metadata = {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.fallbackModels?.length ? { fallbackModels: options.fallbackModels } : {}),
+    ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+    ...(options.agentDefinitionId ? { agentDefinitionId: options.agentDefinitionId } : {}),
+  };
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+function isRuntimeAgentKind(value: string): value is AgentKind {
+  return value === 'subagent' || value === 'teammate' || value === 'team-leader';
+}
+
+function isRuntimeTeamKind(value: string): value is TeamKind {
+  return value === 'team' || value === 'squad' || value === 'worktree';
 }
 
 function parseLifecycleSubstateOptions(tokens: string[]): { ok: true; tokens: string[]; substate?: ZergLifecycleSubstate; substateReason?: string } | { ok: false; output: string } {
@@ -1898,6 +2213,9 @@ function createPiSlashBridgeAdapter(
       launchMode,
       ...(request.agentDefinitionId ? { agentDefinitionId: request.agentDefinitionId } : {}),
       ...(request.description ? { description: request.description } : {}),
+      ...(request.model ? { model: request.model } : {}),
+      ...(request.fallbackModels?.length ? { fallbackModels: request.fallbackModels } : {}),
+      ...(request.maxTurns ? { maxTurns: request.maxTurns } : {}),
     };
 
     return Object.keys(metadata).length > 0 ? metadata : undefined;
@@ -2193,7 +2511,7 @@ function createPiSlashBridgeAdapter(
         runId: requestId,
         agentId: request.agent,
         taskId,
-        data: { launchMode, background: request.background === true },
+        data: { launchMode, background: request.background === true, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
       });
 
       events.emit!(SLASH_SUBAGENT_REQUEST_EVENT, {
@@ -2204,6 +2522,9 @@ function createPiSlashBridgeAdapter(
           taskId,
           agentDefinitionId: request.agentDefinitionId,
           description: request.description,
+          ...(request.model ? { model: request.model } : {}),
+          ...(request.fallbackModels?.length ? { fallbackModels: request.fallbackModels } : {}),
+          ...(request.maxTurns ? { maxTurns: request.maxTurns } : {}),
           clarify: false,
           agentScope: 'both',
           ...(request.background ? { async: true } : {}),
@@ -2237,7 +2558,7 @@ function createPiSlashBridgeAdapter(
             runId: requestId,
             agentId: request.agent,
             taskId,
-            data: { launchMode },
+            data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
           }));
         }
         return {
@@ -2258,7 +2579,7 @@ function createPiSlashBridgeAdapter(
         runId: requestId,
         agentId: request.agent,
         taskId,
-        data: { launchMode },
+        data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
       });
       return { ok: true, runId: requestId, taskId, message: `zerg launched ${request.agent} as ${requestId} (${launchMode})` };
     },

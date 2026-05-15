@@ -63,6 +63,12 @@ export interface ZergAgentDefinition {
   description?: string;
   prompt: string;
   source: ZergAgentDefinitionSource;
+  /** LLM/model identifier to request when launching this agent. */
+  model?: string;
+  /** Ordered fallback model identifiers for launch adapters that support fallbacks. */
+  fallbackModels?: string[];
+  /** Optional maximum agentic turns for launch adapters that support turn caps. */
+  maxTurns?: number;
   tools?: string[];
   disallowedTools?: string[];
   permissionMode?: AutomationMode | 'inherit';
@@ -98,6 +104,12 @@ export interface ZergSubagentLaunchRequest {
   taskId?: string;
   agentDefinitionId?: string;
   description?: string;
+  /** LLM/model identifier requested for this launch. */
+  model?: string;
+  /** Ordered fallback model identifiers requested for this launch. */
+  fallbackModels?: string[];
+  /** Optional maximum agentic turns requested for this launch. */
+  maxTurns?: number;
 }
 
 export interface ZergSubagentControlResult {
@@ -237,6 +249,7 @@ interface ZergRuntimeTransitionBase {
   at?: string;
   mode?: Partial<ZergRuntimeModeContext>;
   contextId?: string;
+  metadata?: ZergExtensionFields;
 }
 
 export interface ZergAgentRuntimeTransition extends ZergRuntimeTransitionBase {

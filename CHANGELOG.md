@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-05-15
+
+### Added
+
+- Added Claude Code-style runtime agent configuration: `/zerg agents create|update|delete` can set prompts, tools, permission mode, model, fallback models, and max turns.
+- Added `/zerg run --model/--fallback-models/--max-turns` routing and bridge metadata propagation, plus `/zerg agent` and `/zerg team` flags for leaders, members, teams, and model metadata.
+
+### Changed
+
+- Bumped package manifest versions from `1.0.0` to `1.0.1` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-release and check-version wording from `v1.0.0` to `v1.0.1`.
+
 ## [1.0.0] - 2026-05-15
 
 ### Changed

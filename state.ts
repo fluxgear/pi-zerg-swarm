@@ -146,11 +146,18 @@ export function upsertAgentDefinition(state: ZergState, definition: ZergAgentDef
     throw new Error('agent definition prompt must be a non-empty string');
   }
 
+  const model = normalizeOptionalConfigText(definition.model);
+  const fallbackModels = dedupeSortedTools(definition.fallbackModels);
+  const maxTurns = normalizePositiveInteger(definition.maxTurns);
+
   const normalized: ZergAgentDefinition = {
     ...definition,
     id,
     label: definition.label?.trim() || definition.id,
     prompt,
+    ...(model ? { model } : {}),
+    ...(fallbackModels ? { fallbackModels } : {}),
+    ...(maxTurns ? { maxTurns } : {}),
     tools: dedupeSortedTools(definition.tools),
     disallowedTools: dedupeSortedTools(definition.disallowedTools),
     metadata: cloneOptional(definition.metadata, cloneExtensionFields),
@@ -992,6 +999,10 @@ function buildAgentIdentity(
     childIds: mergeStrings(existing?.childIds, transition.childIds),
     contextId: transition.contextId ?? existing?.contextId,
     runtime,
+    metadata: {
+      ...existing?.metadata,
+      ...cloneExtensionFields(transition.metadata),
+    },
   };
 }
 
@@ -1012,6 +1023,10 @@ function buildTeamIdentity(
     parentTeamId: transition.parentTeamId ?? existing?.parentTeamId,
     taskIds: mergeStrings(existing?.taskIds, transition.taskIds),
     runtime,
+    metadata: {
+      ...existing?.metadata,
+      ...cloneExtensionFields(transition.metadata),
+    },
   };
 }
 
@@ -1117,6 +1132,15 @@ function isTeamKind(value: ZergRuntimeTransition['kind']): value is TeamKind {
 function mergeStrings(existing: string[] | undefined, incoming: string[] | undefined): string[] | undefined {
   const merged = [...new Set([...(existing ?? []), ...(incoming ?? [])])];
   return merged.length > 0 ? merged : undefined;
+}
+
+function normalizeOptionalConfigText(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+function normalizePositiveInteger(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 function dedupeSortedTools(tools: string[] | undefined): string[] | undefined {
@@ -1511,6 +1535,7 @@ function cloneAgent(agent: AgentIdentity): AgentIdentity {
 function cloneAgentDefinition(definition: ZergAgentDefinition): ZergAgentDefinition {
   return {
     ...definition,
+    fallbackModels: cloneOptional(definition.fallbackModels, cloneArray),
     tools: cloneOptional(definition.tools, cloneArray),
     disallowedTools: cloneOptional(definition.disallowedTools, cloneArray),
     metadata: cloneOptional(definition.metadata, cloneExtensionFields),

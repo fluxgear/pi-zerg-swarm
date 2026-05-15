@@ -1093,7 +1093,7 @@ test('read-only run queues permission without launching adapter', () => {
   const request = getPermissionQueueState(container.snapshot()).requests[0];
   assert.equal(request?.kind, 'run');
   assert.equal(request?.summary, 'Run worker: blocked task');
-  assert.deepEqual(request?.metadata, { agent: 'worker', task: 'blocked task', launchMode: 'fork', background: false });
+  assert.deepEqual(request?.metadata, { agent: 'worker', task: 'blocked task', launchMode: 'fork', background: false, model: undefined, fallbackModels: undefined, maxTurns: undefined });
 });
 
 
@@ -1518,7 +1518,7 @@ test('render surfaces expose control intervention status tree markers and help s
   assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.0 command-surface scaffold');
   assert.ok(idleHelp.includes('Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]'));
   assert.ok(idleHelp.includes('Monitor syntax: /zerg monitor [readonly on|off|toggle|status]'));
-  assert.ok(idleHelp.includes('Registry syntax: /zerg agents [list] | /zerg agents show <id>'));
+  assert.ok(idleHelp.includes('Registry syntax: /zerg agents [list] | show <id> | create|update <id> --prompt <text> [--model <model>] [--tools a,b] | delete <id>'));
   assert.ok(idleHelp.includes('Intervention syntax: /zerg intervene agent <agent-id> <message>'));
   assert.ok(!idleHelp.includes('prompt:'));
   const registrySummary = renderAgentDefinitionsList(Object.values(createBuiltinAgentDefinitions()), { width: 240 });
@@ -1776,6 +1776,58 @@ test('createZergCommandHandler launches subagents through configured adapter and
   const readonlyRuns = handler('/zerg runs');
   assert.equal(readonlyRuns.ok, true);
   assert.ok(readonlyRuns.output.includes('zerg-run-1'));
+});
+
+test('createZergCommandHandler propagates model routing from /zerg run into adapter and run metadata', () => {
+  const launches: ZergSubagentLaunchRequest[] = [];
+  const adapter: ZergSubagentControlAdapter = {
+    kind: 'fake',
+    launch(request) {
+      launches.push(request);
+      return { ok: true, runId: request.runId, taskId: request.taskId, message: `launched ${request.agent}` };
+    },
+  };
+  const container = createZergStateContainer();
+  const handler = createZergCommandHandler(container, {
+    subagentAdapter: adapter,
+    idFactory: {
+      runId: () => 'zerg-model-run',
+      taskId: () => 'task-model-run',
+    },
+  });
+
+  const result = handler('/zerg run worker "fix model bug" --model claude-sonnet-4 --fallback-models gpt-5-mini,gemini-pro --max-turns 9 --bg --fork');
+  assert.equal(result.ok, true);
+  assert.equal(launches[0]?.model, 'claude-sonnet-4');
+  assert.deepEqual(launches[0]?.fallbackModels, ['gpt-5-mini', 'gemini-pro']);
+  assert.equal(launches[0]?.maxTurns, 9);
+  assert.equal(launches[0]?.task, 'fix model bug');
+  assert.equal(launches[0]?.launchMode, 'fork');
+  assert.equal((container.snapshot().agents['zerg-model-run']?.metadata as { model?: string } | undefined)?.model, 'claude-sonnet-4');
+  assert.deepEqual((container.snapshot().tasks['task-model-run']?.metadata as { fallbackModels?: string[] } | undefined)?.fallbackModels, ['gpt-5-mini', 'gemini-pro']);
+  assert.equal((container.snapshot().tasks['task-model-run']?.metadata as { maxTurns?: number } | undefined)?.maxTurns, 9);
+  assert.ok(handler('/zerg runs').output.includes('model:claude-sonnet-4'));
+});
+
+test('createZergCommandHandler parses team and agent relationship/model flags', () => {
+  const container = createZergStateContainer();
+  const handler = createZergCommandHandler(container, { now: () => new Date('2026-05-09T00:00:00.000Z') });
+
+  const leader = handler('/zerg agent create leader "Leader" --kind team-leader --team ops --model claude-sonnet-4');
+  assert.equal(leader.ok, true);
+  const worker = handler('/zerg agent create worker-a "Worker A" --kind teammate --team ops --model gpt-5-codex');
+  assert.equal(worker.ok, true);
+  const team = handler('/zerg team create ops "Ops Team" --kind squad --leader leader --members leader,worker-a');
+  assert.equal(team.ok, true);
+
+  const state = container.snapshot();
+  assert.equal(state.agents.leader?.kind, 'team-leader');
+  assert.equal(state.agents.leader?.teamId, 'ops');
+  assert.equal((state.agents.leader?.metadata as { model?: string } | undefined)?.model, 'claude-sonnet-4');
+  assert.equal(state.teams.ops?.kind, 'squad');
+  assert.equal(state.teams.ops?.leaderAgentId, 'leader');
+  assert.deepEqual(state.teams.ops?.memberAgentIds, ['leader', 'worker-a']);
+  assert.equal(state.teams.ops?.label, 'Ops Team');
 });
 
 test('createZergCommandHandler defaults to fresh and supports explicit fresh without fork context', () => {
@@ -3246,7 +3298,7 @@ test('createZergCommandHandler normalizes help, status, whitespace, case, and al
   assert.ok(helpOutput.includes('/zerg agent create|start|progress|stop|fail|reset <agent-id> [label|activity]'));
   assert.ok(helpOutput.includes('/zerg team create|start|progress|stop|fail|reset <team-id> [label|activity]'));
   assert.ok(helpOutput.includes('Monitor syntax: /zerg monitor [readonly on|off|toggle|status]'));
-  assert.ok(helpOutput.includes('Registry syntax: /zerg agents [list] | /zerg agents show <id>'));
+  assert.ok(helpOutput.includes('Registry syntax: /zerg agents [list] | show <id> | create|update <id> --prompt <text> [--model <model>] [--tools a,b] | delete <id>'));
   assert.equal(handler(' STATUS ').output, statusOutput);
   assert.equal(handler('  /swarm   status ').output, statusOutput);
   assert.equal(handler('zerg status').output, statusOutput);
@@ -3269,6 +3321,47 @@ test('createZergCommandHandler supports /zerg agents list', () => {
   assert.equal(missing.ok, false);
   assert.equal(missing.output, 'Unknown agent definition: ghost');
   assert.equal(handler('/zerg agents').output, list.output);
+});
+
+test('createZergCommandHandler supports /zerg agents create update and delete with model config', () => {
+  const container = createZergStateContainer();
+  const handler = createZergCommandHandler(container);
+
+  const created = handler('/zerg agents create Bug_Fixer --label "Bug Fixer" --description "Fixes defects" --prompt "Fix bugs carefully" --model claude-sonnet-4 --fallback-models gpt-5-mini,gemini-pro --max-turns 12 --tools shell,search --disallowed-tools destructive-write');
+  assert.equal(created.ok, true);
+
+  let definition = getAgentDefinition(container.snapshot(), 'bug-fixer');
+  assert.ok(definition);
+  assert.equal(definition.id, 'bug-fixer');
+  assert.equal(definition.label, 'Bug Fixer');
+  assert.equal(definition.description, 'Fixes defects');
+  assert.equal(definition.prompt, 'Fix bugs carefully');
+  assert.equal(definition.source, 'runtime');
+  assert.equal(definition.model, 'claude-sonnet-4');
+  assert.deepEqual(definition.fallbackModels, ['gemini-pro', 'gpt-5-mini']);
+  assert.equal(definition.maxTurns, 12);
+  assert.deepEqual(definition.tools, ['search', 'shell']);
+  assert.deepEqual(definition.disallowedTools, ['destructive-write']);
+
+  const updated = handler('/zerg agents update bug-fixer --label "Bug Wrangler" --prompt "Wrangle bugs safely" --model gpt-5-codex --tools edit,shell');
+  assert.equal(updated.ok, true);
+  definition = getAgentDefinition(container.snapshot(), 'bug-fixer');
+  assert.ok(definition);
+  assert.equal(definition.label, 'Bug Wrangler');
+  assert.equal(definition.prompt, 'Wrangle bugs safely');
+  assert.equal(definition.description, 'Fixes defects');
+  assert.equal(definition.model, 'gpt-5-codex');
+  assert.deepEqual(definition.tools, ['edit', 'shell']);
+
+  const list = handler('/zerg agents list');
+  assert.equal(list.ok, true);
+  assert.ok(list.output.includes('bug-fixer'));
+  assert.ok(list.output.includes('model:gpt-5-codex'));
+
+  const deleted = handler('/zerg agents delete bug-fixer');
+  assert.equal(deleted.ok, true);
+  assert.equal(getAgentDefinition(container.snapshot(), 'bug-fixer'), undefined);
+  assert.equal(handler('/zerg agents show bug-fixer').output, 'Unknown agent definition: bug-fixer');
 });
 
 
