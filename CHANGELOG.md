@@ -7,6 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-05-15
+
+### Added
+
+- Added exported structured direct control via `createZergControl(...)` plus `ZergControlAction`/`ZergControlResult` contracts for automation without terminal or slash-command parsing.
+- Added Pi custom tool registration for `zerg_control` when the installed Pi API exposes `registerTool(...)`; tool execution calls the same structured control core.
+- Added process-lifetime native background run tracking, `awaitRun` support for foreground direct/native callers, enhanced run snapshots with final/error summaries, completion timestamps, and member progress.
+- Added native team coordination directory creation and visible concurrent member progress before leader integration.
+
+### Fixed
+
+- Fixed stale terminal run rendering by making terminal state such as `done/completed`, `failed/failed`, or `cancelled/cancelled` win over older adapter `starting` snapshots.
+- Wired native interrupt handling to active Pi `AgentSession.abort()` handles when available; cancellation is reported as `cancelling` until native execution actually reaches a terminal cancelled/failed state.
+
+### Changed
+
+- Bumped package manifest versions from `1.0.3` to `1.0.4` in `package.json` and `package-lock.json` (top-level + root package).
+- Updated README current-release, direct API/tool, async durability, and validation wording for `v1.0.4`.
+
+### Known Limitations
+
+- Background run durability is process/session lifetime only; restart-durable persistence is not implemented.
+- Native model fallback and max-turn settings are preserved in request/run metadata, but exact enforcement depends on installed Pi SDK model/session support.
+
 ## [1.0.3] - 2026-05-15
 
 ### Added

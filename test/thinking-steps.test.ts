@@ -2,17 +2,17 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { createPiZergCommandHandler, createZergCommandHandler, registerZergSwarmExtension, type ZergExtensionRegistration } from '../index.js';
+import { createPiZergCommandHandler, createZergCommandHandler, createZergControl, registerZergSwarmExtension, type ZergExtensionRegistration } from '../index.js';
 import { installInternalPatch } from '../internal-patch.js';
 import { deriveThinkingSteps } from '../parse.js';
 import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderStatusLine, renderZergLogList, renderZergLogStatus, renderZergManagementOverlay } from '../render.js';
-import { appendHookEvent, appendZergLogRecord, appendZergLogRecords, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createBuiltinAgentDefinitions, createZergState, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getCurrentAgents, getCurrentMode, getCurrentTasks, getCurrentTeams, getCurrentTree, getPendingPermissionRequests, getPermissionQueueState, getSelectedTreeNode, getZergLogs, getZergLogState, readSharedZergState, removeAgentDefinition, replaceSharedZergState, replayRuntimeTransitions, resetZergState, resolvePermissionRequest, selectNode, setMode, snapshotZergState, upsertAgentDefinition, updateSharedZergState, updateZergState, upsertAgent, upsertTeam, upsertTreeNode } from '../state.js';
-import { ZERG_EXTENSION_VERSION, ZERG_STATE_SCHEMA_VERSION, type AgentStatus, type HookLifecycleEvent, type StructuralPiCommandContext, type StructuralPiCommandOptions, type TaskStatus, type TeamIdentity, type ZergLifecycleSubstate, type ZergLogRecord, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentControlResult, type ZergSubagentLaunchRequest, type ZergTreeNode } from '../types.js';
+import { appendHookEvent, appendZergLogRecord, appendZergLogRecords, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createBuiltinAgentDefinitions, createZergState, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getCurrentAgents, getCurrentMode, getCurrentTasks, getCurrentTeams, getCurrentTree, getPendingPermissionRequests, getPermissionQueueState, getSelectedTreeNode, getSubagentRunSnapshot, getZergLogs, getZergLogState, readSharedZergState, removeAgentDefinition, replaceSharedZergState, replayRuntimeTransitions, resetZergState, resolvePermissionRequest, selectNode, setMode, snapshotZergState, upsertAgentDefinition, updateSharedZergState, updateZergState, upsertAgent, upsertTask, upsertTeam, upsertTreeNode } from '../state.js';
+import { ZERG_EXTENSION_VERSION, ZERG_STATE_SCHEMA_VERSION, type AgentStatus, type HookLifecycleEvent, type StructuralPiCommandContext, type StructuralPiCommandOptions, type TaskStatus, type TeamIdentity, type ZergLifecycleSubstate, type ZergLogRecord, type ZergRuntimeTransition, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentControlResult, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot, type ZergTreeNode } from '../types.js';
 
 type AssertAssignable<T extends true> = T;
 type ContainerReadReturnsState = AssertAssignable<ReturnType<ZergStateContainer['read']> extends ZergState ? true : false>;
 type RegistrationStateExposesSnapshot = AssertAssignable<ZergExtensionRegistration['state'] extends ZergState ? true : false>;
-type _assertAgentStatusCompatibility = AssertAssignable<AgentStatus extends 'idle' | 'running' | 'blocked' | 'needs-attention' | 'done' | 'failed' ? true : false>;
+type _assertAgentStatusCompatibility = AssertAssignable<AgentStatus extends 'idle' | 'running' | 'blocked' | 'needs-attention' | 'done' | 'failed' | 'cancelled' ? true : false>;
 type _assertTaskStatusCompatibility = AssertAssignable<TaskStatus extends AgentStatus ? true : false>;
 type _assertLifecycleSubstateIncludesWaitingPermission = AssertAssignable<'waiting-permission' extends ZergLifecycleSubstate ? true : false>;
 
@@ -613,7 +613,7 @@ test('registration.state exposes event snapshots, not a write channel', () => {
   try {
     const firstSnapshot = registration.state;
     assert.equal(firstSnapshot.events.length, 1);
-    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.3 internal patch unavailable; command surface registered');
+    assert.equal(firstSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.4 internal patch unavailable; command surface registered');
 
     firstSnapshot.events[0]!.message = 'mutated registration event';
     firstSnapshot.events.push({
@@ -626,11 +626,11 @@ test('registration.state exposes event snapshots, not a write channel', () => {
 
     const secondSnapshot = registration.state;
     assert.equal(secondSnapshot.events.length, 1);
-    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.3 internal patch unavailable; command surface registered');
+    assert.equal(secondSnapshot.events[0]?.message, 'pi-zerg-swarm v1.0.4 internal patch unavailable; command surface registered');
     assert.equal(secondSnapshot.mode.automation, 'manual');
 
     secondSnapshot.events[0]!.message = 'mutated second snapshot';
-    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.3 internal patch unavailable; command surface registered');
+    assert.equal(registration.state.events[0]?.message, 'pi-zerg-swarm v1.0.4 internal patch unavailable; command surface registered');
   } finally {
     registration.dispose();
   }
@@ -1312,7 +1312,7 @@ test('createZergCommandHandler applies mode status transitions and revert', () =
 
   const readOnlyStatus = readOnlyHandler('/zerg mode status');
   assert.equal(readOnlyStatus.ok, true);
-  assert.ok(readOnlyStatus.output.includes('zerg v1.0.3 command surface'));
+  assert.ok(readOnlyStatus.output.includes('zerg v1.0.4 command surface'));
   assert.ok(readOnlyStatus.output.includes('control operator'));
   assert.ok(readOnlyStatus.output.includes('mode manual'));
   assert.ok(readOnlyStatus.output.includes('no active intervention'));
@@ -1521,7 +1521,7 @@ test('render surfaces expose control intervention status tree markers and help s
   assert.ok(idleStatus.includes('control operator'));
   assert.ok(idleStatus.includes('mode manual'));
   assert.ok(idleStatus.includes('no active intervention'));
-  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.3 command-surface scaffold');
+  assert.equal(idleHelp.split('\n')[0], 'pi-zerg-swarm v1.0.4 command-surface scaffold');
   assert.ok(idleHelp.includes('Control syntax: /zerg mode status|manual|assisted|automatic|revert [reason]'));
   assert.ok(idleHelp.includes('Monitor syntax: /zerg monitor [readonly on|off|toggle|status]'));
   assert.ok(idleHelp.includes('Registry syntax: /zerg agents [list] | show <id> | create|update <id> --prompt <text> [--model <model>] [--tools a,b] | delete <id>'));
@@ -1588,7 +1588,7 @@ test('renderMonitor combines monitor header, runtime status, tree, and recent ev
   const monitor = renderMonitor(state, { width: 240, recentEventCount: 2 });
 
   assert.ok(monitor.includes('zerg monitor'));
-  assert.ok(monitor.includes('status: zerg v1.0.3 command surface'));
+  assert.ok(monitor.includes('status: zerg v1.0.4 command surface'));
   assert.ok(monitor.includes('read-only: enabled'));
   assert.ok(monitor.includes('tree:'));
   assert.ok(monitor.includes('recent events:'));
@@ -2137,9 +2137,14 @@ test('run snapshot helper clones exact public shape', () => {
   (snapshot.metadata?.nested as { tags: string[] }).tags.push('mutated');
 
   assert.deepEqual(Object.keys(snapshot).sort(), [
+    'agentDefinitionId',
     'agentId',
     'agentLabel',
+    'completedAt',
+    'errorSummary',
+    'finalSummary',
     'launchMode',
+    'memberProgress',
     'metadata',
     'runId',
     'startedAt',
@@ -2208,6 +2213,7 @@ test('registerZergSwarmExtension falls back to native runner when slash bridge d
 
   assert.ok(commandHandler);
   await commandHandler!('/zerg run planner "wait forever"', piCommandContext as StructuralPiCommandContext);
+  await new Promise((resolve) => setTimeout(resolve, 130));
 
   assert.equal(notifications.some((message) => message.includes('zerg launched planner as zerg-stalled-run')), true);
   assert.equal(notifications.some((message) => message.includes('task-stalled-run')), true);
@@ -2936,7 +2942,7 @@ test('render monitoring summarizes runtime health activity without mutation', ()
   const status = renderStatusLine(state, { width: 240 });
   const tree = renderAgentTree(state, { width: 240 });
 
-  assert.ok(status.includes('zerg v1.0.3 command surface'));
+  assert.ok(status.includes('zerg v1.0.4 command surface'));
   assert.ok(status.includes('agents 1 (1 running)'));
   assert.ok(status.includes('teams 1 (0 running)'));
   assert.ok(status.includes('unhealthy 1'));
@@ -3176,7 +3182,7 @@ test('registerZergSwarmExtension uses Pi command registration and notifies comma
   });
 
   assert.equal(notifications.length, 1);
-  assert.ok(notifications[0]?.message.includes('zerg v1.0.3 command surface'));
+  assert.ok(notifications[0]?.message.includes('zerg v1.0.4 command surface'));
   assert.equal(notifications[0]?.type, 'info');
 });
 
@@ -3196,8 +3202,8 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
   try {
     assert.equal(registration.patchInstalled, true);
     assert.deepEqual(registrations.map((registered) => registered.name), ['zerg', 'zerg-swarm', 'swarm']);
-    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.3 internal patch path active']);
-    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.3 internal patch path active']);
+    assert.deepEqual(registration.state.events.map((event) => event.message), ['pi-zerg-swarm v1.0.4 internal patch path active']);
+    assert.deepEqual(readSharedZergState().events.map((event) => event.message), ['pi-zerg-swarm v1.0.4 internal patch path active']);
 
     eventBus.emit('zerg:smoke');
 
@@ -3221,7 +3227,7 @@ test('registerZergSwarmExtension activates Pi event-bus patch once with command 
     });
 
     assert.equal(notifications.length, 1);
-    assert.ok(notifications[0]?.message.includes('zerg v1.0.3 command surface'));
+    assert.ok(notifications[0]?.message.includes('zerg v1.0.4 command surface'));
     assert.equal(notifications[0]?.type, 'info');
   } finally {
     registration.dispose();
@@ -3600,4 +3606,192 @@ test('renderAgentTree does not mutate render state input', () => {
   renderAgentTree(state);
 
   assert.equal(JSON.stringify(state), before);
+});
+
+test('direct Zerg control API manages agents, teams, runs, logs, and interrupts structurally', async () => {
+  const container = createZergStateContainer();
+  const launches: ZergSubagentLaunchRequest[] = [];
+  const interrupts: string[] = [];
+  let completeRun: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => { completeRun = resolve; });
+  const adapter: ZergSubagentControlAdapter = {
+    kind: 'fake',
+    launch(request) {
+      launches.push(request);
+      return { ok: true, runId: request.runId, taskId: request.taskId, message: `accepted ${request.runId}` };
+    },
+    interrupt(runId) {
+      if (runId) interrupts.push(runId);
+      return { ok: true, runId, message: `interrupt requested for ${runId}` };
+    },
+    async awaitRun(runId) {
+      await completed;
+      const now = '2026-05-15T10:00:00.000Z';
+      const stopped = applyRuntimeTransition(container.read(), {
+        entity: 'agent',
+        action: 'stop',
+        id: runId,
+        kind: 'subagent',
+        status: 'done',
+        activity: 'fake complete',
+        substate: 'completed',
+        substateReason: 'fake complete',
+        metadata: { completedAt: now, finalSummary: 'fake complete' },
+      }, { now: () => new Date(now) });
+      container.replace(upsertTask(stopped, {
+        ...(stopped.tasks['task-direct-run']!),
+        id: 'task-direct-run',
+        title: stopped.tasks['task-direct-run']?.title ?? 'direct task',
+        status: 'done',
+        ownerAgentId: runId,
+        updatedAt: now,
+        substate: 'completed',
+        substateReason: 'fake complete',
+        substateUpdatedAt: now,
+      }));
+      return getSubagentRunSnapshot(container.read(), runId);
+    },
+  };
+  const control = createZergControl(container, {
+    subagentAdapter: adapter,
+    idFactory: { runId: () => 'zerg-direct-run', taskId: () => 'task-direct-run' },
+    now: () => new Date('2026-05-15T09:59:00.000Z'),
+  });
+
+  const created = await control.execute({ action: 'agents.create', id: 'worker-direct', label: 'Worker Direct', prompt: 'work directly', model: 'gpt-5-codex', fallbackModels: ['gpt-5-mini'], maxTurns: 5, tools: ['read'] });
+  assert.equal(created.ok, true);
+  assert.equal(created.agentId, 'worker-direct');
+  assert.equal((created.data as { agent: { model?: string } }).agent.model, 'gpt-5-codex');
+
+  const updated = await control.execute({ action: 'agents.update', id: 'worker-direct', prompt: 'updated prompt', model: 'gpt-5' });
+  assert.equal(updated.ok, true);
+  assert.equal((updated.data as { agent: { prompt?: string; model?: string } }).agent.prompt, 'updated prompt');
+  assert.equal((updated.data as { agent: { model?: string } }).agent.model, 'gpt-5');
+
+  const team = await control.execute({ action: 'team.create', id: 'direct-team', label: 'Direct Team', leader: 'worker-direct', members: ['worker-direct', 'reviewer'], model: 'gpt-5' });
+  assert.equal(team.ok, true);
+  assert.deepEqual((team.data as { team: TeamIdentity }).team.memberAgentIds, ['worker-direct', 'reviewer']);
+  assert.equal(((team.data as { team: TeamIdentity }).team.metadata as { model?: string }).model, 'gpt-5');
+
+  const background = await control.execute({ action: 'run', agent: 'worker-direct', task: 'direct task', background: true, launchMode: 'fork', maxTurns: 3 });
+  assert.equal(background.ok, true);
+  assert.equal(background.runId, 'zerg-direct-run');
+  assert.equal(background.taskId, 'task-direct-run');
+  assert.equal(launches[0]?.agent, 'worker-direct');
+  assert.equal(launches[0]?.background, true);
+  assert.equal((background.data as { run?: ZergSubagentRunSnapshot }).run?.substate, 'spawning');
+
+  const listedBefore = await control.execute({ action: 'runs.list' });
+  assert.equal((listedBefore.data as { runs: ZergSubagentRunSnapshot[] }).runs[0]?.runId, 'zerg-direct-run');
+  assert.equal((listedBefore.data as { runs: ZergSubagentRunSnapshot[] }).runs[0]?.substate, 'spawning');
+
+  completeRun?.();
+  await adapter.awaitRun?.('zerg-direct-run');
+  const shown = await control.execute({ action: 'runs.show', runId: 'zerg-direct-run' });
+  assert.equal((shown.data as { run: ZergSubagentRunSnapshot }).run.status, 'done');
+  assert.equal((shown.data as { run: ZergSubagentRunSnapshot }).run.substate, 'completed');
+  assert.equal((shown.data as { run: ZergSubagentRunSnapshot }).run.finalSummary, 'fake complete');
+
+  const logs = await control.execute({ action: 'logs.list', runId: 'zerg-direct-run' });
+  assert.equal(logs.ok, true);
+  assert.ok((logs.data as { records: ZergLogRecord[] }).records.some((record) => record.runId === 'zerg-direct-run'));
+
+  const interrupted = await control.execute({ action: 'interrupt', runId: 'zerg-direct-run' });
+  assert.equal(interrupted.ok, true);
+  assert.deepEqual(interrupts, ['zerg-direct-run']);
+
+  const deleted = await control.execute({ action: 'agents.delete', id: 'worker-direct' });
+  assert.equal(deleted.ok, true);
+  assert.equal(deleted.agentId, 'worker-direct');
+
+  const invalid = await control.execute({ action: 'bogus' } as never);
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error?.code, 'invalid_request');
+});
+
+test('direct Zerg control API preserves quoted run task text structurally', async () => {
+  const launches: ZergSubagentLaunchRequest[] = [];
+  const control = createZergControl({}, {
+    subagentAdapter: {
+      kind: 'fake',
+      launch(request) {
+        launches.push(request);
+        return { ok: true, runId: request.runId, taskId: request.taskId, message: 'accepted' };
+      },
+    },
+    idFactory: { runId: () => 'zerg-quoted-run', taskId: () => 'task-quoted-run' },
+  });
+
+  const task = 'fix "quoted" and \'single quoted\' task';
+  const result = await control.execute({ action: 'run', agent: 'planner', task, background: true });
+  assert.equal(result.ok, true);
+  assert.equal(launches[0]?.task, task);
+
+  const optionLike = await control.execute({ action: 'run', agent: 'planner', task: '--bg', background: true });
+  assert.equal(optionLike.ok, true);
+  assert.equal(launches[1]?.task, '--bg');
+});
+
+test('extension registers zerg_control Pi tool when registerTool is available', async () => {
+  const tools: Array<{ name: string; execute?: (id: string, params: unknown) => Promise<unknown> | unknown }> = [];
+  const registration = registerZergSwarmExtension({
+    registerCommand() {
+      return { dispose() {} };
+    },
+    registerTool(definition) {
+      tools.push({ name: definition.name, execute: definition.execute });
+      return { dispose() {} };
+    },
+  });
+
+  try {
+    const tool = tools.find((entry) => entry.name === 'zerg_control');
+    assert.ok(tool?.execute);
+    const result = await tool.execute('tool-1', { action: 'status' }) as { details?: { ok?: boolean; action?: string; data?: { version?: string } } };
+    assert.equal(result.details?.ok, true);
+    assert.equal(result.details?.action, 'status');
+    assert.equal(result.details?.data?.version, ZERG_EXTENSION_VERSION);
+
+    const invalid = await tool.execute('tool-2', { action: 'bogus' }) as { details?: { ok?: boolean; error?: { code?: string; message?: string } } };
+    assert.equal(invalid.details?.ok, false);
+    assert.equal(invalid.details?.error?.code, 'invalid_request');
+    assert.equal(invalid.details?.error?.message, 'Unknown zerg_control action: bogus');
+  } finally {
+    registration.dispose();
+  }
+});
+
+test('terminal run state wins over stale adapter starting substate', () => {
+  const completedAt = '2026-05-15T10:10:00.000Z';
+  let state = createZergState();
+  state = applyRuntimeTransition(state, {
+    entity: 'agent',
+    action: 'stop',
+    id: 'zerg-terminal-run',
+    label: 'Terminal Worker',
+    kind: 'subagent',
+    status: 'done',
+    substate: 'completed',
+    substateReason: 'complete',
+    activity: 'complete',
+    metadata: { taskId: 'task-terminal', agentDefinitionId: 'worker', completedAt, finalSummary: 'complete' },
+  }, { now: () => new Date(completedAt) });
+  const container = createZergStateContainer(state);
+  const adapter: ZergSubagentControlAdapter = {
+    kind: 'fake',
+    launch() { return { ok: true, message: 'unused' }; },
+    getRun() {
+      return { runId: 'zerg-terminal-run', agentId: 'worker', status: 'running', substate: 'starting', substateReason: 'stale', updatedAt: '2026-05-15T10:09:00.000Z' };
+    },
+  };
+  const handler = createZergCommandHandler(container, { subagentAdapter: adapter });
+  const listed = handler('/zerg runs');
+  assert.equal(listed.ok, true);
+  assert.ok(listed.output.includes('(done/completed)'));
+  assert.equal(listed.output.includes('running/starting'), false);
+
+  const shown = handler('/zerg runs show zerg-terminal-run');
+  assert.equal(shown.ok, true);
+  assert.ok(shown.output.includes('status: done/completed'));
+  assert.equal(shown.output.includes('done/starting'), false);
 });

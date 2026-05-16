@@ -1,11 +1,11 @@
 export const ZERG_COMMANDS = ['zerg', 'zerg-swarm', 'swarm'] as const;
-export const ZERG_EXTENSION_VERSION = '1.0.3' as const;
+export const ZERG_EXTENSION_VERSION = '1.0.4' as const;
 export type ZergCommandName = (typeof ZERG_COMMANDS)[number];
 export const ZERG_COMMAND_INVOCATIONS = ['/zerg', '/zerg-swarm', '/swarm'] as const;
 export type ZergCommandInvocation = (typeof ZERG_COMMAND_INVOCATIONS)[number];
 export type AgentKind = 'subagent' | 'teammate' | 'team-leader';
 export type TeamKind = 'team' | 'squad' | 'worktree';
-export type AgentStatus = 'idle' | 'running' | 'blocked' | 'needs-attention' | 'done' | 'failed';
+export type AgentStatus = 'idle' | 'running' | 'blocked' | 'needs-attention' | 'done' | 'failed' | 'cancelled';
 export type TaskStatus = AgentStatus;
 export type AutomationMode = 'manual' | 'assisted' | 'automatic';
 export type ZergMode = AutomationMode;
@@ -26,6 +26,7 @@ export type ZergLifecycleSubstate =
   | 'cancelling'
   | 'completed'
   | 'failed'
+  | 'cancelled'
   | 'reset';
 export type ZergRuntimeHealth = 'unknown' | 'healthy' | 'degraded' | 'blocked' | 'failed' | 'stopped';
 export type ZergRuntimeEntity = 'agent' | 'team';
@@ -120,9 +121,20 @@ export interface ZergSubagentControlResult {
   message: string;
 }
 
+export interface ZergSubagentMemberProgress {
+  agentId: string;
+  runId?: string;
+  status: 'queued' | 'starting' | 'running' | 'done' | 'failed' | 'cancelled';
+  handoffPath?: string;
+  startedAt?: string;
+  completedAt?: string;
+  message?: string;
+}
+
 export interface ZergSubagentRunSnapshot {
   runId: string;
   agentId: string;
+  agentDefinitionId?: string;
   agentLabel?: string;
   task?: string;
   status: AgentStatus;
@@ -133,6 +145,10 @@ export interface ZergSubagentRunSnapshot {
   substateUpdatedAt?: string;
   startedAt?: string;
   updatedAt?: string;
+  completedAt?: string;
+  finalSummary?: string;
+  errorSummary?: string;
+  memberProgress?: ZergSubagentMemberProgress[];
   metadata?: ZergExtensionFields;
 }
 
@@ -186,11 +202,49 @@ export interface ZergSubagentControlAdapter {
   readonly kind: 'pi-native' | 'pi-slash-bridge' | 'fake' | 'unavailable';
   launch(request: ZergSubagentLaunchRequest): ZergSubagentControlResult;
   interrupt?(runId?: string): ZergSubagentControlResult;
+  awaitRun?(runId: string): Promise<ZergSubagentRunSnapshot | undefined>;
   listAgentDefinitions?(): readonly ZergAgentDefinition[];
   getAgentDefinition?(id: string): ZergAgentDefinition | undefined;
   listRuns?(): readonly ZergSubagentRunSnapshot[];
   getRun?(runId: string): ZergSubagentRunSnapshot | undefined;
   dispose?(): void;
+}
+
+export type ZergControlAction =
+  | { action: 'status' }
+  | { action: 'agents.list' }
+  | { action: 'agents.show'; id: string }
+  | { action: 'agents.create' | 'agents.update'; id: string; label?: string; description?: string; prompt?: string; model?: string; fallbackModels?: string[]; maxTurns?: number; tools?: string[]; disallowedTools?: string[]; permissionMode?: AutomationMode | 'inherit' }
+  | { action: 'agents.delete'; id: string }
+  | { action: 'team.create' | 'team.update'; id: string; label?: string; leader?: string; members?: string[]; kind?: TeamKind; model?: string; fallbackModels?: string[]; maxTurns?: number }
+  | { action: 'run'; agent: string; task: string; background?: boolean; launchMode?: ZergSubagentLaunchMode; model?: string; fallbackModels?: string[]; maxTurns?: number }
+  | { action: 'runs.list' }
+  | { action: 'runs.show'; runId: string }
+  | { action: 'logs.list'; runId?: string; level?: ZergLogLevel; limit?: number }
+  | { action: 'interrupt'; runId?: string };
+
+export interface ZergControlError {
+  code: string;
+  message: string;
+}
+
+export interface ZergControlResult<T = unknown> {
+  ok: boolean;
+  action: ZergControlAction['action'];
+  output?: string;
+  data?: T;
+  runId?: string;
+  taskId?: string;
+  agentId?: string;
+  teamId?: string;
+  error?: ZergControlError;
+  stateRevision?: number;
+}
+
+export interface ZergControl {
+  execute(action: ZergControlAction): Promise<ZergControlResult>;
+  getState(): ZergState;
+  dispose(): void;
 }
 
 export type PermissionModeInterventionKind = 'agent' | 'subagent' | 'leader';
@@ -535,8 +589,27 @@ export interface StructuralPiCommand extends StructuralPiCommandOptions {
   name: ZergCommandName;
 }
 
+export interface StructuralPiToolResult {
+  content?: Array<{ type: string; text?: string; [key: string]: unknown }>;
+  details?: unknown;
+  [key: string]: unknown;
+}
+
+export interface StructuralPiToolDefinition {
+  name: string;
+  label?: string;
+  description?: string;
+  promptSnippet?: string;
+  promptGuidelines?: string[];
+  parameters?: unknown;
+  prepareArguments?(args: unknown): unknown;
+  execute?(toolCallId: string, params: unknown, signal?: AbortSignal, onUpdate?: (result: StructuralPiToolResult) => void, context?: unknown): Promise<StructuralPiToolResult> | StructuralPiToolResult;
+  [key: string]: unknown;
+}
+
 export interface StructuralPiExtensionContext {
   registerCommand?(name: ZergCommandName, options: StructuralPiCommandOptions): unknown;
+  registerTool?(definition: StructuralPiToolDefinition): unknown;
   events?: {
     emit?(eventName: unknown, ...args: unknown[]): unknown;
     on?(eventName: unknown, handler: (...args: unknown[]) => unknown): unknown;

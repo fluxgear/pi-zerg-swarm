@@ -48,6 +48,7 @@ export function createZergSubagentRunSnapshot(run: ZergSubagentRunSnapshot): Zer
   return {
     runId: run.runId,
     agentId: run.agentId,
+    agentDefinitionId: run.agentDefinitionId,
     agentLabel: run.agentLabel,
     task: run.task,
     status: run.status,
@@ -58,6 +59,10 @@ export function createZergSubagentRunSnapshot(run: ZergSubagentRunSnapshot): Zer
     substateUpdatedAt: run.substateUpdatedAt,
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
+    completedAt: run.completedAt,
+    finalSummary: run.finalSummary,
+    errorSummary: run.errorSummary,
+    memberProgress: run.memberProgress?.map((member) => ({ ...member })),
     metadata: cloneOptional(run.metadata, cloneExtensionFields),
   };
 }
@@ -1047,6 +1052,10 @@ function resolveTransitionSubstate(transition: ZergRuntimeTransition, activity: 
     return inferLifecycleSubstateFromActivity(activity, 'executing');
   }
 
+  if (transition.status === 'cancelled') {
+    return 'cancelled';
+  }
+
   switch (transition.action) {
     case 'create':
       return 'queued';
@@ -1087,6 +1096,7 @@ function isLifecycleSubstate(value: unknown): value is ZergLifecycleSubstate {
     || value === 'cancelling'
     || value === 'completed'
     || value === 'failed'
+    || value === 'cancelled'
     || value === 'reset';
 }
 
@@ -1183,9 +1193,11 @@ function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
   const metadata = agent.metadata;
   const taskId = typeof metadata?.taskId === 'string' ? metadata.taskId : undefined;
   const launchMode = metadata?.launchMode === 'fork' || metadata?.launchMode === 'fresh' ? metadata.launchMode : undefined;
+  const agentDefinitionId = typeof metadata?.agentDefinitionId === 'string' ? metadata.agentDefinitionId : undefined;
   return {
     runId: agent.id,
-    agentId: agent.label || agent.id,
+    agentId: agentDefinitionId ?? agent.id,
+    agentDefinitionId,
     agentLabel: agent.label,
     status: agent.status || 'unknown',
     task: runtimeTask,
@@ -1196,6 +1208,10 @@ function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
     substateUpdatedAt: runtime?.substateUpdatedAt,
     startedAt: runtime?.startedAt,
     updatedAt: runtime?.updatedAt,
+    completedAt: typeof metadata?.completedAt === 'string' ? metadata.completedAt : undefined,
+    finalSummary: typeof metadata?.finalSummary === 'string' ? metadata.finalSummary : undefined,
+    errorSummary: typeof metadata?.errorSummary === 'string' ? metadata.errorSummary : undefined,
+    memberProgress: Array.isArray(metadata?.memberProgress) ? metadata.memberProgress.map((member) => ({ ...(member as Record<string, unknown>) })) as unknown as ZergSubagentRunSnapshot['memberProgress'] : undefined,
     metadata: cloneOptional(metadata, cloneExtensionFields),
   };
 }

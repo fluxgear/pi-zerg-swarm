@@ -1,9 +1,12 @@
+import { mkdirSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
+
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
 import { openZergManagementOverlay } from './ui/management-overlay.js';
 import { renderAgentDefinitionSummary, renderAgentDefinitionsList, renderAgentTree, renderHelp, renderMonitor, renderPermissionQueueList, renderPermissionQueueStatus, renderStatusLine, renderZergLogList, renderZergLogStatus, renderZergLogSummary, renderZergManagementOverlay, renderZergSubagentRunList, renderZergSubagentRunSummary, type ZergManagementOverlayRow } from './render.js';
-import { appendZergLogRecord, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, getZergLogs, getZergLogState, readSharedZergState, removeAgentDefinition, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertAgentDefinition, upsertTask, type ZergLogFilter } from './state.js';
-import { ZERG_COMMANDS, type AgentKind, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiTuiHandle, type TeamKind, type ZergAgentDefinition, ZERG_EXTENSION_VERSION, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControlState, type ZergControlController, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergManagementTargetKind, type ZergOperatorMessageDeliveryStatus, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
+import { appendZergLogRecord, applyInterventionRecord, applyModeTransition, applyRuntimeTransition, createZergState, createZergStateContainer, createZergSubagentRunSnapshot, enqueuePermissionRequest, getAgentDefinition, getAgentDefinitions, getPendingPermissionRequests, getPermissionQueueState, getSubagentRunSnapshot, getSubagentRunSnapshots, getZergLogs, getZergLogState, readSharedZergState, removeAgentDefinition, replaceSharedZergState, resolvePermissionRequest, seedBuiltinAgentDefinitions, snapshotZergState, upsertAgentDefinition, upsertTask, type ZergLogFilter } from './state.js';
+import { ZERG_COMMANDS, type AgentKind, type AgentStatus, type AutomationMode, type PermissionModeTransitionInput, type StructuralPiCommand, type StructuralPiCommandContext, type StructuralPiCommandOptions, type StructuralPiExtensionContext, type StructuralPiToolDefinition, type StructuralPiTuiHandle, type TeamKind, type ZergAgentDefinition, ZERG_EXTENSION_VERSION, type ZergCommandName, type ZergCommandResult, type ZergConfigOverlayTab, type ZergControl, type ZergControlAction, type ZergControlController, type ZergControlResult, type ZergControlState, type ZergInternalPatchController, type ZergLifecycleSubstate, type ZergManagementTargetKind, type ZergOperatorMessageDeliveryStatus, type ZergPermissionDecision, type ZergPermissionRequestKind, type ZergPiCommandHandler, type ZergRuntimeEntity, type ZergRuntimeTransition, type ZergRuntimeTransitionAction, type ZergState, type ZergStateContainer, type ZergSubagentControlAdapter, type ZergSubagentLaunchMode, type ZergSubagentLaunchRequest, type ZergSubagentRunSnapshot } from './types.js';
 
 type ZergIdFactory = {
   runId?: () => string;
@@ -20,6 +23,7 @@ type RuntimeCommandOptions = ZergCommandHandlerOptions & { syncSharedState?: boo
 
 export interface ZergExtensionRegistration {
   commands: ZergCommandName[];
+  control: ZergControl;
   /**
    * Snapshot of extension state at access time.
    *
@@ -67,6 +71,7 @@ const SLASH_SUBAGENT_UPDATE_EVENT = 'subagent:slash:update';
 const SLASH_SUBAGENT_CANCEL_EVENT = 'subagent:slash:cancel';
 const DEFAULT_RUN_ID_PREFIX = 'zerg-';
 const DEFAULT_TASK_ID_PREFIX = 'task-';
+const NATIVE_BRIDGE_ACK_GRACE_MS = 100;
 const OVERLAY_VISIBLE_ROWS = 14;
 const DEFAULT_OVERLAY_INTERVENTION_DRAFT = 'operator intervention requested from overlay';
 const OVERLAY_FILTER_DEFERRED_MESSAGE = 'text filter entry is deferred; use /zerg permission, /zerg logs, or /zerg runs command filters.';
@@ -75,6 +80,20 @@ const defaultIdFactory: Required<ZergIdFactory> = {
   runId: () => `${DEFAULT_RUN_ID_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
   taskId: () => `${DEFAULT_TASK_ID_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
 };
+
+type PiNativeSessionHandle = {
+  abort?: () => Promise<void> | void;
+  dispose?: () => void;
+};
+
+type PiNativeActiveRun = {
+  runId: string;
+  cancelRequested: boolean;
+  sessions: Set<PiNativeSessionHandle>;
+  promise?: Promise<void>;
+};
+
+type PiNativeActiveRunRegistry = Map<string, PiNativeActiveRun>;
 
 
 interface NormalizedZergCommandInput {
@@ -117,6 +136,7 @@ export function registerZergSwarmExtension(
   }
   let patch: ZergInternalPatchController | undefined;
   const commandDisposers: RegisteredCommandDisposer[] = [];
+  const toolDisposers: DisposableRegistration[] = [];
 
   const syncSharedStateFromContainer = () => {
     replaceSharedZergState(stateContainer.snapshot());
@@ -137,7 +157,9 @@ export function registerZergSwarmExtension(
     },
     subscribe: (listener) => stateContainer.subscribe?.(listener) ?? (() => undefined),
   };
-  const subagentAdapter = options.subagentAdapter ?? createPiSlashBridgeAdapter(context, syncedStateContainer, { ...options, syncSharedState: true } as RuntimeCommandOptions);
+  const runtimeOptions = { ...options, syncSharedState: true } as RuntimeCommandOptions;
+  const subagentAdapter = options.subagentAdapter ?? createPiSlashBridgeAdapter(context, syncedStateContainer, runtimeOptions);
+  const control = createZergControl(syncedStateContainer, { ...runtimeOptions, subagentAdapter });
 
   try {
     const installedPatch = installInternalPatch(context, syncedStateContainer);
@@ -156,6 +178,11 @@ export function registerZergSwarmExtension(
       }
     }
 
+    const toolDisposer = registerZergControlTool(context, control);
+    if (toolDisposer) {
+      toolDisposers.push(toolDisposer);
+    }
+
     patch.emit({
       type: 'hook',
       message: patch.installed
@@ -165,6 +192,13 @@ export function registerZergSwarmExtension(
     });
   } catch (error) {
     disposeStartupResources(commandDisposers, patch);
+    for (const toolDisposer of toolDisposers.splice(0)) {
+      try {
+        toolDisposer.dispose();
+      } catch {
+        // Preserve startup failure.
+      }
+    }
     throw error;
   }
 
@@ -173,6 +207,7 @@ export function registerZergSwarmExtension(
 
   return {
     commands: [...ZERG_COMMANDS],
+    control,
     get state() {
       return stateContainer.snapshot();
     },
@@ -193,6 +228,20 @@ export function registerZergSwarmExtension(
         } finally {
           clearRegisteredCommand(commandDisposer.target, commandDisposer.name);
         }
+      }
+
+      for (const toolDisposer of toolDisposers.splice(0)) {
+        try {
+          toolDisposer.dispose();
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
+
+      try {
+        control.dispose();
+      } catch (error) {
+        firstError ??= error;
       }
 
       try {
@@ -236,6 +285,272 @@ function disposeStartupResources(
 }
 
 const PI_COMMAND_OUTPUT_WIDTH = 240;
+
+export interface ZergControlOptions extends ZergCommandHandlerOptions {
+  seedState?: Partial<ZergState>;
+  syncSharedState?: boolean;
+}
+
+export function createZergControl(
+  stateOrContainer: ZergStateContainer | Partial<ZergState> = createZergStateContainer(),
+  options: ZergControlOptions = {},
+): ZergControl {
+  const container = isZergStateContainer(stateOrContainer)
+    ? stateOrContainer
+    : createZergStateContainer(seedBuiltinAgentDefinitions(createZergState({ ...options.seedState, ...stateOrContainer })));
+  const adapter = options.subagentAdapter ?? createPiNativeAdapter({}, container, options as RuntimeCommandOptions);
+  const runtimeOptions = { ...options, subagentAdapter: adapter } as RuntimeCommandOptions;
+
+  return {
+    async execute(action: ZergControlAction): Promise<ZergControlResult> {
+      return executeZergControlAction(container, action, runtimeOptions);
+    },
+    getState() {
+      return container.snapshot();
+    },
+    dispose() {
+      if (!options.subagentAdapter) {
+        adapter.dispose?.();
+      }
+    },
+  };
+}
+
+async function executeZergControlAction(
+  container: ZergStateContainer,
+  action: ZergControlAction,
+  options: RuntimeCommandOptions,
+): Promise<ZergControlResult> {
+  try {
+    switch (action.action) {
+      case 'status': {
+        const snapshot = container.snapshot();
+        return controlOk(action.action, {
+          version: ZERG_EXTENSION_VERSION,
+          revision: snapshot.revision,
+          lifecycle: snapshot.lifecycle,
+          mode: snapshot.mode,
+          counts: {
+            agents: Object.keys(snapshot.agents).length,
+            teams: Object.keys(snapshot.teams).length,
+            tasks: Object.keys(snapshot.tasks).length,
+            agentDefinitions: Object.keys(snapshot.agentDefinitions).length,
+            logs: getZergLogState(snapshot).records.length,
+            runs: getSubagentRunSnapshots(snapshot).length,
+          },
+        }, renderStatusLine(snapshot, { width: PI_COMMAND_OUTPUT_WIDTH }), snapshot.revision);
+      }
+      case 'agents.list': {
+        const snapshot = container.snapshot();
+        const agents = getAgentDefinitions(snapshot);
+        return controlOk(action.action, { agents }, renderAgentDefinitionsList(agents, { width: PI_COMMAND_OUTPUT_WIDTH }), snapshot.revision);
+      }
+      case 'agents.show': {
+        const snapshot = container.snapshot();
+        if (!action.id) return controlError(action.action, 'invalid_request', 'agents.show requires id.', snapshot.revision);
+        const agent = getAgentDefinition(snapshot, action.id);
+        if (!agent) return controlError(action.action, 'not_found', `Unknown agent definition: ${action.id}`, snapshot.revision);
+        return controlOk(action.action, { agent }, renderAgentDefinitionSummary(agent, { width: PI_COMMAND_OUTPUT_WIDTH }), snapshot.revision, { agentId: agent.id });
+      }
+      case 'agents.create':
+      case 'agents.update': {
+        if (!action.id) return controlError(action.action, 'invalid_request', `${action.action} requires id.`, container.snapshot().revision);
+        const existing = action.action === 'agents.update' ? getAgentDefinition(container.read(), action.id) : undefined;
+        if (action.action === 'agents.update' && !existing) return controlError(action.action, 'not_found', `Unknown agent definition: ${action.id}`, container.snapshot().revision);
+        const prompt = action.prompt ?? existing?.prompt;
+        if (!prompt?.trim()) return controlError(action.action, 'invalid_request', 'agent create/update requires prompt.', container.snapshot().revision);
+        const agent: ZergAgentDefinition = {
+          id: action.id,
+          label: action.label ?? existing?.label ?? action.id,
+          description: action.description ?? existing?.description,
+          prompt,
+          source: existing?.source ?? 'runtime',
+          model: action.model ?? existing?.model,
+          fallbackModels: action.fallbackModels ?? existing?.fallbackModels,
+          maxTurns: action.maxTurns ?? existing?.maxTurns,
+          tools: action.tools ?? existing?.tools,
+          disallowedTools: action.disallowedTools ?? existing?.disallowedTools,
+          permissionMode: action.permissionMode ?? existing?.permissionMode,
+          metadata: existing?.metadata,
+          extensions: existing?.extensions,
+        };
+        const updated = container.replace(appendLogToState(upsertAgentDefinition(container.read(), agent), options, {
+          source: 'command', level: 'info', kind: 'text', message: `agent definition ${agent.id} saved`, agentId: agent.id,
+        }));
+        const saved = getAgentDefinition(updated, agent.id) ?? agent;
+        return controlOk(action.action, { agent: saved }, `agent definition ${saved.id} saved.`, updated.revision, { agentId: saved.id });
+      }
+      case 'agents.delete': {
+        if (!action.id) return controlError(action.action, 'invalid_request', 'agents.delete requires id.', container.snapshot().revision);
+        const existing = getAgentDefinition(container.read(), action.id);
+        if (!existing) return controlError(action.action, 'not_found', `Unknown agent definition: ${action.id}`, container.snapshot().revision);
+        const updated = container.replace(removeAgentDefinition(container.read(), action.id));
+        return controlOk(action.action, { deletedId: existing.id }, `agent definition ${existing.id} deleted.`, updated.revision, { agentId: existing.id });
+      }
+      case 'team.create':
+      case 'team.update': {
+        if (!action.id) return controlError(action.action, 'invalid_request', `${action.action} requires id.`, container.snapshot().revision);
+        const current = container.read();
+        const existing = current.teams[action.id];
+        if (action.action === 'team.update' && !existing) return controlError(action.action, 'not_found', `Unknown team: ${action.id}`, current.revision);
+        const now = options.now ?? (() => new Date());
+        const memberAgentIds = action.members ?? existing?.memberAgentIds ?? [];
+        const teamState = applyRuntimeTransition(current, {
+          entity: 'team',
+          action: existing ? 'progress' : 'create',
+          id: action.id,
+          label: action.label ?? existing?.label ?? action.id,
+          kind: action.kind ?? existing?.kind ?? 'team',
+          leaderAgentId: action.leader ?? existing?.leaderAgentId,
+          memberAgentIds,
+          status: existing?.status ?? 'idle',
+          substate: existing?.runtime?.substate ?? 'idle',
+          substateReason: 'direct control team saved',
+          metadata: { ...existing?.metadata, model: action.model ?? existing?.metadata?.model, fallbackModels: action.fallbackModels ?? existing?.metadata?.fallbackModels, maxTurns: action.maxTurns ?? existing?.metadata?.maxTurns },
+        }, { now });
+        const updated = container.replace(appendLogToState(teamState, options, {
+          source: 'command', level: 'info', kind: 'text', message: `team ${action.id} saved`, teamId: action.id,
+        }));
+        return controlOk(action.action, { team: updated.teams[action.id] }, `team ${action.id} saved.`, updated.revision, { teamId: action.id });
+      }
+      case 'run': {
+        if (!action.agent || !action.task) return controlError(action.action, 'invalid_request', 'run requires agent and task.', container.snapshot().revision);
+        const result = dispatchRunRequest(container, {
+          agent: action.agent,
+          task: action.task,
+          background: action.background,
+          fork: action.launchMode === 'fork',
+          launchMode: action.launchMode,
+          ...(action.model ? { model: action.model } : {}),
+          ...(action.fallbackModels?.length ? { fallbackModels: action.fallbackModels } : {}),
+          ...(action.maxTurns ? { maxTurns: action.maxTurns } : {}),
+        }, options);
+        if (!result.ok) return controlError(action.action, 'launch_failed', result.output, container.snapshot().revision, { runId: result.runId, taskId: result.taskId });
+        if (result.runId && !action.background && options.subagentAdapter?.awaitRun) {
+          await options.subagentAdapter.awaitRun(result.runId);
+        }
+        const snapshot = container.snapshot();
+        const run = result.runId ? getSubagentRunSnapshot(snapshot, result.runId) ?? options.subagentAdapter?.getRun?.(result.runId) : undefined;
+        return controlOk(action.action, { run, request: { ...action }, taskId: result.taskId, runId: result.runId }, result.output, snapshot.revision, { runId: result.runId, taskId: result.taskId, agentId: action.agent });
+      }
+      case 'runs.list': {
+        const runs = resolveAvailableRuns(container, options.subagentAdapter);
+        return controlOk(action.action, { runs }, renderZergSubagentRunList(runs, { width: PI_COMMAND_OUTPUT_WIDTH }), container.snapshot().revision);
+      }
+      case 'runs.show': {
+        const snapshot = container.snapshot();
+        if (!action.runId) return controlError(action.action, 'invalid_request', 'runs.show requires runId.', snapshot.revision);
+        const stateRun = getSubagentRunSnapshot(snapshot, action.runId);
+        const adapterRun = options.subagentAdapter?.getRun?.(action.runId);
+        const run = stateRun && isTerminalRunSnapshot(stateRun) ? stateRun : adapterRun ?? stateRun;
+        if (!run) return controlError(action.action, 'not_found', `Unknown run: ${action.runId}`, snapshot.revision, { runId: action.runId });
+        return controlOk(action.action, { run }, renderZergSubagentRunSummary(run, { width: PI_COMMAND_OUTPUT_WIDTH }), snapshot.revision, { runId: action.runId, taskId: run.taskId, agentId: run.agentId });
+      }
+      case 'logs.list': {
+        const snapshot = container.snapshot();
+        const records = getZergLogs(snapshot, { runId: action.runId, level: action.level, limit: action.limit });
+        return controlOk(action.action, { records }, renderZergLogList(records, { width: PI_COMMAND_OUTPUT_WIDTH }), snapshot.revision, { runId: action.runId });
+      }
+      case 'interrupt': {
+        const result = dispatchInterruptCommand(container, action.runId ?? '', options);
+        const snapshot = container.snapshot();
+        if (!result.ok) return controlError(action.action, 'interrupt_failed', result.output, snapshot.revision, { runId: result.runId ?? action.runId });
+        const runId = result.runId ?? action.runId ?? getZergControlState(snapshot).activeRunId;
+        const run = runId ? getSubagentRunSnapshot(snapshot, runId) ?? options.subagentAdapter?.getRun?.(runId) : undefined;
+        return controlOk(action.action, { run }, result.output, snapshot.revision, { runId, taskId: run?.taskId, agentId: run?.agentId });
+      }
+    }
+
+    const actionName = typeof (action as { action?: unknown }).action === 'string'
+      ? (action as { action: ZergControlAction['action'] }).action
+      : 'status';
+    return controlError(actionName, 'invalid_request', `Unknown zerg control action: ${String((action as { action?: unknown }).action)}`, container.snapshot().revision);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const actionName = typeof (action as { action?: unknown }).action === 'string'
+      ? (action as { action: ZergControlAction['action'] }).action
+      : 'status';
+    return controlError(actionName, 'exception', message, container.snapshot().revision);
+  }
+}
+
+function controlOk(action: ZergControlAction['action'], data: unknown, output: string | undefined, stateRevision: number, ids: Partial<Pick<ZergControlResult, 'runId' | 'taskId' | 'agentId' | 'teamId'>> = {}): ZergControlResult {
+  return { ok: true, action, data: cloneJsonCompatible(data), output, stateRevision, ...ids };
+}
+
+function controlError(action: ZergControlAction['action'], code: string, message: string, stateRevision: number, ids: Partial<Pick<ZergControlResult, 'runId' | 'taskId' | 'agentId' | 'teamId'>> = {}): ZergControlResult {
+  return { ok: false, action, output: message, error: { code, message }, stateRevision, ...ids };
+}
+
+function cloneJsonCompatible<T>(value: T): T {
+  return value === undefined ? value : JSON.parse(JSON.stringify(value)) as T;
+}
+
+function registerZergControlTool(context: StructuralPiExtensionContext, control: ZergControl): DisposableRegistration | undefined {
+  if (typeof context.registerTool !== 'function') {
+    return undefined;
+  }
+
+  const definition: StructuralPiToolDefinition = {
+    name: 'zerg_control',
+    label: 'Zerg control',
+    description: 'Structured pi-zerg-swarm control API for status, agents, teams, runs, logs, and interrupts.',
+    promptSnippet: 'Control pi-zerg-swarm through structured actions without slash-command or terminal automation.',
+    promptGuidelines: ['Use zerg_control for pi-zerg-swarm automation instead of driving /zerg through a terminal.'],
+    parameters: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        action: { type: 'string' },
+      },
+      required: ['action'],
+    },
+    async execute(_toolCallId: string, params: unknown) {
+      const action = parseZergControlToolParams(params);
+      const result = action.ok
+        ? await control.execute(action.action)
+        : controlError('status', 'invalid_request', action.message, control.getState().revision);
+      return {
+        content: [{ type: 'text', text: result.output ?? JSON.stringify(result.data ?? result.error ?? {}, null, 2) }],
+        details: result,
+      };
+    },
+  };
+
+  const registered = context.registerTool(definition);
+  return normalizeDisposableRegistration(registered);
+}
+
+function parseZergControlToolParams(params: unknown): { ok: true; action: ZergControlAction } | { ok: false; message: string } {
+  if (!params || typeof params !== 'object' || typeof (params as { action?: unknown }).action !== 'string') {
+    return { ok: false, message: 'zerg_control requires an object with action.' };
+  }
+
+  const actionName = (params as { action: string }).action;
+  if (!isZergControlActionName(actionName)) {
+    return { ok: false, message: `Unknown zerg_control action: ${actionName}` };
+  }
+
+  return { ok: true, action: params as ZergControlAction };
+}
+
+function isZergControlActionName(value: string): value is ZergControlAction['action'] {
+  return value === 'status'
+    || value === 'agents.list'
+    || value === 'agents.show'
+    || value === 'agents.create'
+    || value === 'agents.update'
+    || value === 'agents.delete'
+    || value === 'team.create'
+    || value === 'team.update'
+    || value === 'run'
+    || value === 'runs.list'
+    || value === 'runs.show'
+    || value === 'logs.list'
+    || value === 'interrupt';
+}
+
+export type { ZergControl, ZergControlAction, ZergControlResult, ZergSubagentRunSnapshot } from './types.js';
 
 export function createZergCommandHandler(
   stateOrReader: ZergStateSource,
@@ -875,49 +1190,57 @@ function dispatchRunCommand(
   payload: string,
   options: RuntimeCommandOptions,
 ): ZergCommandResult {
+  const parsed = parseRunCommand(payload);
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  return dispatchRunRequest(stateOrReader, parsed.request, options);
+}
+
+function dispatchRunRequest(
+  stateOrReader: ZergStateSource,
+  requestInput: ZergSubagentLaunchRequest,
+  options: RuntimeCommandOptions,
+): ZergCommandResult {
   const container = getWritableStateContainer(stateOrReader);
   if (!container) {
     return { ok: false, output: RUNTIME_WRITABLE_STATE_ERROR };
   }
 
   const current = container.read();
-  const parsed = parseRunCommand(payload);
-  if (!parsed.ok) {
-    return parsed;
-  }
-
-  const launchMode = resolveLaunchMode(parsed.request);
+  const launchMode = resolveLaunchMode(requestInput);
   const definitions = getAgentDefinitions(current);
-  const resolvedDefinition = definitions.length > 0 ? getAgentDefinition(current, parsed.request.agent) : undefined;
+  const resolvedDefinition = definitions.length > 0 ? getAgentDefinition(current, requestInput.agent) : undefined;
   if (definitions.length > 0 && !resolvedDefinition) {
-    return { ok: false, output: `Unknown agent definition: ${parsed.request.agent}` };
+    return { ok: false, output: `Unknown agent definition: ${requestInput.agent}` };
   }
 
   if (current.mode.readOnly) {
     const queued = enqueuePermissionRequest(current, {
       kind: 'run',
-      targetId: resolvedDefinition?.id ?? parsed.request.agent,
-      agentId: resolvedDefinition?.id ?? parsed.request.agent,
+      targetId: resolvedDefinition?.id ?? requestInput.agent,
+      agentId: resolvedDefinition?.id ?? requestInput.agent,
       requester: 'operator',
-      summary: `Run ${resolvedDefinition?.id ?? parsed.request.agent}: ${parsed.request.task}`,
+      summary: `Run ${resolvedDefinition?.id ?? requestInput.agent}: ${requestInput.task}`,
       details: `read-only blocked /zerg run (${launchMode})`,
       metadata: {
-        agent: resolvedDefinition?.id ?? parsed.request.agent,
-        task: parsed.request.task,
+        agent: resolvedDefinition?.id ?? requestInput.agent,
+        task: requestInput.task,
         launchMode,
-        background: parsed.request.background,
-        model: parsed.request.model ?? resolvedDefinition?.model,
-        fallbackModels: parsed.request.fallbackModels ?? resolvedDefinition?.fallbackModels,
-        maxTurns: parsed.request.maxTurns ?? resolvedDefinition?.maxTurns,
+        background: requestInput.background,
+        model: requestInput.model ?? resolvedDefinition?.model,
+        fallbackModels: requestInput.fallbackModels ?? resolvedDefinition?.fallbackModels,
+        maxTurns: requestInput.maxTurns ?? resolvedDefinition?.maxTurns,
       },
     }, { now: options.now ?? (() => new Date()) });
     const logged = appendLogToState(queued, options, {
       source: 'permission',
       level: 'warn',
       kind: 'text',
-      message: `read-only blocked zerg run for ${resolvedDefinition?.id ?? parsed.request.agent}`,
-      agentId: resolvedDefinition?.id ?? parsed.request.agent,
-      data: { launchMode, background: parsed.request.background },
+      message: `read-only blocked zerg run for ${resolvedDefinition?.id ?? requestInput.agent}`,
+      agentId: resolvedDefinition?.id ?? requestInput.agent,
+      data: { launchMode, background: requestInput.background },
     });
     const snapshot = container.replace(logged);
     if (options.syncSharedState) {
@@ -932,28 +1255,28 @@ function dispatchRunCommand(
 
   const adapter = options.subagentAdapter;
   if (!adapter || adapter.kind === 'unavailable') {
-    return { ok: false, output: 'No Pi subagent adapter is available. Load pi-subagents or provide a ZergSubagentControlAdapter.' };
+    return { ok: false, output: 'No Pi native zerg adapter is available. Register the extension in Pi or provide a ZergSubagentControlAdapter.' };
   }
 
   const now = options.now ?? (() => new Date());
   const nowTimestamp = now().toISOString();
   const runId = resolveRunId(options.idFactory);
   const taskId = resolveTaskId(options.idFactory);
-  const resolvedAgentId = resolvedDefinition?.id ?? parsed.request.agent;
-  const resolvedAgentLabel = resolvedDefinition?.label ?? parsed.request.agent;
+  const resolvedAgentId = resolvedDefinition?.id ?? requestInput.agent;
+  const resolvedAgentLabel = resolvedDefinition?.label ?? requestInput.agent;
 
-  const requestedModel = parsed.request.model ?? resolvedDefinition?.model;
-  const requestedFallbackModels = parsed.request.fallbackModels ?? resolvedDefinition?.fallbackModels;
-  const requestedMaxTurns = parsed.request.maxTurns ?? resolvedDefinition?.maxTurns;
+  const requestedModel = requestInput.model ?? resolvedDefinition?.model;
+  const requestedFallbackModels = requestInput.fallbackModels ?? resolvedDefinition?.fallbackModels;
+  const requestedMaxTurns = requestInput.maxTurns ?? resolvedDefinition?.maxTurns;
   const request: ZergSubagentLaunchRequest = {
-    ...parsed.request,
+    ...requestInput,
     agent: resolvedAgentId,
     fork: launchMode === 'fork',
     launchMode,
     runId,
     taskId,
     agentDefinitionId: resolvedDefinition?.id,
-    description: parsed.request.task,
+    description: requestInput.task,
     ...(requestedModel ? { model: requestedModel } : {}),
     ...(requestedFallbackModels?.length ? { fallbackModels: requestedFallbackModels } : {}),
     ...(requestedMaxTurns ? { maxTurns: requestedMaxTurns } : {}),
@@ -972,7 +1295,7 @@ function dispatchRunCommand(
 
   const taskRecord = {
     id: taskId,
-    title: parsed.request.task,
+    title: requestInput.task,
     status: 'running' as const,
     ownerAgentId: runId,
     updatedAt: nowTimestamp,
@@ -989,7 +1312,7 @@ function dispatchRunCommand(
     id: runId,
     label: resolvedAgentLabel,
     kind: 'subagent',
-    activity: parsed.request.task,
+    activity: requestInput.task,
     substate: 'spawning',
     substateReason: 'adapter launch requested',
   }, { now: () => new Date(nowTimestamp) });
@@ -1016,7 +1339,7 @@ function dispatchRunCommand(
     runId,
     agentId: resolvedAgentId,
     taskId,
-    data: { launchMode, background: parsed.request.background, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
+    data: { launchMode, background: requestInput.background, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
   });
 
   const launchReadyState = container.replace(withLaunchLog);
@@ -1062,7 +1385,7 @@ function dispatchRunCommand(
     }, { now: () => new Date(nowTimestamp) }),
     {
       id: taskId,
-      title: parsed.request.task,
+      title: requestInput.task,
       status: 'failed',
       ownerAgentId: runId,
       updatedAt: nowTimestamp,
@@ -1118,7 +1441,9 @@ function dispatchRunsCommand(
       return { ok: false, output: 'Usage: /zerg runs show <run-id>' };
     }
 
-    const match = adapter?.getRun?.(runId) ?? getSubagentRunSnapshot(resolveZergStateSnapshot(stateOrReader), runId);
+    const stateMatch = getSubagentRunSnapshot(resolveZergStateSnapshot(stateOrReader), runId);
+    const adapterMatch = adapter?.getRun?.(runId);
+    const match = stateMatch && isTerminalRunSnapshot(stateMatch) ? stateMatch : adapterMatch ?? stateMatch;
     if (!match) {
       return { ok: false, output: `Unknown run: ${runId}` };
     }
@@ -1796,12 +2121,55 @@ function parseLifecycleSubstateOptions(tokens: string[]): { ok: true; tokens: st
 
 function tokenizeRuntimePayload(payload: string): string[] {
   const tokens: string[] = [];
-  const matcher = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let match: RegExpExecArray | null;
+  let current = '';
+  let quote: '"' | "'" | undefined;
+  let escaping = false;
 
-  while ((match = matcher.exec(payload)) !== null) {
-    tokens.push(match[1] ?? match[2] ?? match[3] ?? '');
+  const flush = () => {
+    if (current.length > 0) {
+      tokens.push(current);
+      current = '';
+    }
+  };
+
+  for (const char of payload) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaping = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      flush();
+      continue;
+    }
+
+    current += char;
   }
+
+  if (escaping) {
+    current += '\\';
+  }
+  flush();
 
   return tokens;
 }
@@ -1850,6 +2218,7 @@ function isLifecycleSubstate(value: string | undefined): value is ZergLifecycleS
     || value === 'cancelling'
     || value === 'completed'
     || value === 'failed'
+    || value === 'cancelled'
     || value === 'reset';
 }
 
@@ -1984,7 +2353,21 @@ function resolveAvailableRuns(
     for (const run of adapterRuns) {
       const snapshot = createZergSubagentRunSnapshot(run);
       const existing = runsById.get(snapshot.runId);
-      runsById.set(snapshot.runId, existing ? createZergSubagentRunSnapshot({ ...existing, ...snapshot }) : snapshot);
+      if (existing && isTerminalRunSnapshot(existing)) {
+        runsById.set(snapshot.runId, createZergSubagentRunSnapshot({
+          ...snapshot,
+          ...existing,
+          task: existing.task ?? snapshot.task,
+          agentId: existing.agentId ?? snapshot.agentId,
+          agentLabel: existing.agentLabel ?? snapshot.agentLabel,
+          metadata: {
+            ...snapshot.metadata,
+            ...existing.metadata,
+          },
+        }));
+      } else {
+        runsById.set(snapshot.runId, existing ? createZergSubagentRunSnapshot({ ...existing, ...snapshot }) : snapshot);
+      }
     }
   }
 
@@ -2001,7 +2384,7 @@ function getWritableStateContainer(stateOrReader: ZergStateSource): ZergStateCon
   return isZergStateContainer(stateOrReader) ? stateOrReader : undefined;
 }
 
-function isZergStateContainer(value: ZergStateSource): value is ZergStateContainer {
+function isZergStateContainer(value: unknown): value is ZergStateContainer {
   return typeof value === 'object'
     && value !== null
     && typeof (value as Partial<ZergStateContainer>).read === 'function'
@@ -2183,6 +2566,55 @@ function renderZergControlStatus(state: ZergState, width: number): string {
   ].map((line) => line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line).join('\n');
 }
 
+function isTerminalRunSnapshot(run: ZergSubagentRunSnapshot): boolean {
+  return run.status === 'done' || run.status === 'failed' || run.status === 'cancelled' || run.substate === 'completed' || run.substate === 'failed' || run.substate === 'cancelled';
+}
+
+function createPiNativeActiveRun(runId: string): PiNativeActiveRun {
+  return { runId, cancelRequested: false, sessions: new Set<PiNativeSessionHandle>() };
+}
+
+function requestPiNativeAbort(runId: string, activeRuns: PiNativeActiveRunRegistry): { ok: boolean; message: string; activeRun?: PiNativeActiveRun } {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun) {
+    return { ok: false, message: `No active cancellable native zerg run: ${runId}` };
+  }
+
+  activeRun.cancelRequested = true;
+  let abortCount = 0;
+  for (const session of activeRun.sessions) {
+    if (typeof session.abort === 'function') {
+      abortCount += 1;
+      void Promise.resolve(session.abort()).catch(() => undefined);
+    }
+  }
+
+  return {
+    ok: true,
+    message: abortCount > 0 ? `interrupt requested for ${runId}; abort signalled to ${abortCount} native session(s)` : `interrupt requested for ${runId}; native session is still starting`,
+    activeRun,
+  };
+}
+
+function setRunMetadata(container: ZergStateContainer, runId: string, metadata: Record<string, unknown>): ZergState {
+  const state = container.read();
+  const agent = state.agents[runId];
+  if (!agent) return state;
+  return container.replace({
+    ...state,
+    agents: {
+      ...state.agents,
+      [runId]: {
+        ...agent,
+        metadata: {
+          ...agent.metadata,
+          ...metadata,
+        },
+      },
+    },
+  });
+}
+
 function createPiSlashBridgeAdapter(
   context: StructuralPiExtensionContext,
   container: ZergStateContainer,
@@ -2195,6 +2627,8 @@ function createPiSlashBridgeAdapter(
 
   type PendingRun = ZergSubagentRunSnapshot & { launched: boolean; started: boolean; completed: boolean };
   const runsById = new Map<string, PendingRun>();
+  const activeRuns: PiNativeActiveRunRegistry = new Map();
+  const fallbackLaunches = new Map<string, Promise<void>>();
   const resolveTimestamp = () => (options.now ?? (() => new Date()))().toISOString();
 
   const resolveTaskIdFromRun = (request: ZergSubagentLaunchRequest): string | undefined => {
@@ -2223,6 +2657,20 @@ function createPiSlashBridgeAdapter(
       return pending ? createZergSubagentRunSnapshot(pending) : undefined;
     }
 
+    if (isTerminalRunSnapshot(stateRun)) {
+      return createZergSubagentRunSnapshot({
+        ...pending,
+        ...stateRun,
+        task: stateRun.task ?? pending?.task,
+        agentId: stateRun.agentId ?? pending?.agentId ?? stateRun.runId,
+        agentLabel: stateRun.agentLabel ?? pending?.agentLabel,
+        metadata: {
+          ...pending?.metadata,
+          ...stateRun.metadata,
+        },
+      });
+    }
+
     return createZergSubagentRunSnapshot({
       ...stateRun,
       ...pending,
@@ -2243,7 +2691,18 @@ function createPiSlashBridgeAdapter(
     for (const [runId, pending] of runsById) {
       const existing = merged.get(runId);
       if (existing) {
-        merged.set(runId, createZergSubagentRunSnapshot({
+        const terminal = isTerminalRunSnapshot(existing);
+        merged.set(runId, createZergSubagentRunSnapshot(terminal ? {
+          ...pending,
+          ...existing,
+          task: existing.task ?? pending.task,
+          agentId: existing.agentId ?? pending.agentId,
+          agentLabel: existing.agentLabel ?? pending.agentLabel,
+          metadata: {
+            ...pending.metadata,
+            ...existing.metadata,
+          },
+        } : {
           ...existing,
           ...pending,
           status: existing.status ?? pending.status,
@@ -2532,31 +2991,44 @@ function createPiSlashBridgeAdapter(
       }
 
       if (!run.started) {
-        run.started = true;
-        run.launched = true;
-        updatePendingRun(requestId, 'running', resolveTimestamp(), request.task, 'starting', 'pi native runner started');
-        const started = applyRuntimeTransition(container.read(), {
-          entity: 'agent',
-          action: 'start',
-          id: requestId,
-          label: agentLabel ?? request.agent,
-          kind: 'subagent',
-          activity: request.task,
-          substate: 'starting',
-          substateReason: 'pi native runner started',
-        }, { now: options.now ?? (() => new Date()) });
-        container.replace(updateRunTaskLifecycle(started, taskId, 'running', 'starting', 'pi native runner started', resolveTimestamp()));
-        appendLogToContainer(container, options, {
-          source: 'adapter',
-          level: 'info',
-          kind: 'text',
-          message: `pi native launch started ${requestId}`,
-          runId: requestId,
-          agentId: request.agent,
-          taskId,
-          data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
-        });
-        void runPiNativeZergRequest(context, container, options, request, requestId, taskId, launchMode);
+        const fallbackLaunch = new Promise<void>((resolve) => {
+          setTimeout(() => {
+            if (run.started || run.completed || activeRuns.has(requestId)) {
+              resolve();
+              return;
+            }
+            run.started = true;
+            run.launched = true;
+            updatePendingRun(requestId, 'running', resolveTimestamp(), request.task, 'starting', 'pi native runner started');
+            const started = applyRuntimeTransition(container.read(), {
+              entity: 'agent',
+              action: 'start',
+              id: requestId,
+              label: agentLabel ?? request.agent,
+              kind: 'subagent',
+              activity: request.task,
+              substate: 'starting',
+              substateReason: 'pi native runner started',
+            }, { now: options.now ?? (() => new Date()) });
+            container.replace(updateRunTaskLifecycle(started, taskId, 'running', 'starting', 'pi native runner started', resolveTimestamp()));
+            appendLogToContainer(container, options, {
+              source: 'adapter',
+              level: 'info',
+              kind: 'text',
+              message: `pi native launch started ${requestId}`,
+              runId: requestId,
+              agentId: request.agent,
+              taskId,
+              data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
+            });
+            const activeRun = createPiNativeActiveRun(requestId);
+            activeRuns.set(requestId, activeRun);
+            activeRun.promise = runPiNativeZergRequest(context, container, options, request, requestId, taskId, launchMode, activeRun)
+              .finally(() => activeRuns.delete(requestId));
+            void activeRun.promise.finally(resolve);
+          }, NATIVE_BRIDGE_ACK_GRACE_MS);
+        }).finally(() => fallbackLaunches.delete(requestId));
+        fallbackLaunches.set(requestId, fallbackLaunch);
       }
 
       run.launched = true;
@@ -2573,12 +3045,21 @@ function createPiSlashBridgeAdapter(
       });
       return { ok: true, runId: requestId, taskId, message: `zerg launched ${request.agent} as ${requestId} (${launchMode})` };
     },
+    async awaitRun(runId) {
+      const fallbackLaunch = fallbackLaunches.get(runId);
+      if (fallbackLaunch) {
+        await fallbackLaunch;
+      }
+      const activeRun = activeRuns.get(runId);
+      return activeRun?.promise?.then(() => getSubagentRunSnapshot(container.read(), runId)) ?? Promise.resolve(getSubagentRunSnapshot(container.read(), runId));
+    },
     interrupt(runId) {
       const target = runId || getZergControlState(container.read()).activeRunId;
       if (!target) {
         return { ok: false, message: 'No active zerg subagent run to interrupt.' };
       }
       events.emit!(SLASH_SUBAGENT_CANCEL_EVENT, { requestId: target });
+      const abortResult = requestPiNativeAbort(target, activeRuns);
       const snapshot = updateZergControlState(container, { activeRunId: target }, `interrupt requested for ${target}`, options);
       container.replace(applyRuntimeTransition(snapshot, {
         entity: 'agent',
@@ -2588,19 +3069,24 @@ function createPiSlashBridgeAdapter(
         status: 'running',
         activity: 'interrupt requested',
         substate: 'cancelling',
-        substateReason: 'interrupt requested',
+        substateReason: abortResult.ok ? abortResult.message : 'bridge interrupt requested; native abort handle unavailable',
       }, { now: options.now ?? (() => new Date()) }));
       appendLogToContainer(container, options, {
         source: 'adapter',
         level: 'warn',
         kind: 'text',
-        message: `interrupt requested for ${target}`,
+        message: abortResult.ok ? abortResult.message : `bridge interrupt requested for ${target}`,
         runId: target,
       });
-      return { ok: true, runId: target, message: `interrupt requested for ${target}` };
+      return { ok: true, runId: target, message: abortResult.ok ? abortResult.message : `bridge interrupt requested for ${target}; native abort handle unavailable` };
     },
     dispose() {
       for (const dispose of disposers) dispose();
+      for (const runId of activeRuns.keys()) {
+        requestPiNativeAbort(runId, activeRuns);
+      }
+      activeRuns.clear();
+      fallbackLaunches.clear();
       runsById.clear();
     },
   };
@@ -2611,6 +3097,7 @@ function createPiNativeAdapter(
   container: ZergStateContainer,
   options: RuntimeCommandOptions,
 ): ZergSubagentControlAdapter {
+  const activeRuns: PiNativeActiveRunRegistry = new Map();
   return {
     kind: 'pi-native',
     listAgentDefinitions() {
@@ -2662,13 +3149,26 @@ function createPiNativeAdapter(
         taskId,
         data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
       });
-      void runPiNativeZergRequest(context, container, options, request, requestId, taskId, launchMode);
+      const activeRun = createPiNativeActiveRun(requestId);
+      activeRuns.set(requestId, activeRun);
+      activeRun.promise = runPiNativeZergRequest(context, container, options, request, requestId, taskId, launchMode, activeRun)
+        .finally(() => activeRuns.delete(requestId));
+      void activeRun.promise;
       return { ok: true, runId: requestId, taskId, message: `zerg launched ${request.agent} as ${requestId} (${launchMode})` };
+    },
+    async awaitRun(runId) {
+      await Promise.resolve();
+      const activeRun = activeRuns.get(runId);
+      return activeRun?.promise?.then(() => getSubagentRunSnapshot(container.read(), runId)) ?? Promise.resolve(getSubagentRunSnapshot(container.read(), runId));
     },
     interrupt(runId) {
       const target = runId || getZergControlState(container.read()).activeRunId;
       if (!target) {
         return { ok: false, message: 'No active zerg run to interrupt.' };
+      }
+      const abortResult = requestPiNativeAbort(target, activeRuns);
+      if (!abortResult.ok) {
+        return { ok: false, runId: target, message: abortResult.message };
       }
       const snapshot = applyRuntimeTransition(container.read(), {
         entity: 'agent',
@@ -2678,10 +3178,23 @@ function createPiNativeAdapter(
         status: 'running',
         activity: 'interrupt requested',
         substate: 'cancelling',
-        substateReason: 'interrupt requested',
+        substateReason: abortResult.message,
       }, { now: options.now ?? (() => new Date()) });
       container.replace(snapshot);
-      return { ok: true, runId: target, message: `interrupt requested for ${target}` };
+      appendLogToContainer(container, options, {
+        source: 'adapter',
+        level: 'warn',
+        kind: 'text',
+        message: abortResult.message,
+        runId: target,
+      });
+      return { ok: true, runId: target, message: abortResult.message };
+    },
+    dispose() {
+      for (const runId of activeRuns.keys()) {
+        requestPiNativeAbort(runId, activeRuns);
+      }
+      activeRuns.clear();
     },
   };
 }
@@ -2694,6 +3207,7 @@ async function runPiNativeZergRequest(
   runId: string,
   taskId: string | undefined,
   launchMode: ZergSubagentLaunchMode,
+  activeRun?: PiNativeActiveRun,
 ): Promise<void> {
   const timestamp = () => (options.now ?? (() => new Date()))().toISOString();
   const state = container.read();
@@ -2705,9 +3219,14 @@ async function runPiNativeZergRequest(
       .map((memberId) => getAgentDefinition(state, memberId))
       .filter((definition): definition is ZergAgentDefinition => definition !== undefined)
     : [];
+  const cwd = resolvePiNativeCwd(context);
   const coordDir = `coord/zerg-${runId.replace(/^zerg-/, '')}`;
+  const coordPath = resolvePath(cwd, coordDir);
 
   try {
+    mkdirSync(coordPath, { recursive: true });
+    setRunMetadata(container, runId, { coordDir, coordPath });
+
     const promptBase = [
       `Run id: ${runId}`,
       `Task: ${request.task}`,
@@ -2719,20 +3238,28 @@ async function runPiNativeZergRequest(
 
     let workerSummaries = '';
     if (memberDefinitions.length > 0) {
-      const summaries = await Promise.all(memberDefinitions.map((definition) => runSinglePiNativeAgent(context, definition, {
-        task: `${promptBase}\n\nYou are team member ${definition.id}. Complete your slice for the team task, read existing files as needed, write code/tests as appropriate, and write ${coordDir}/${definition.id}.md with your handoff.`,
+      const startedAt = timestamp();
+      setRunMetadata(container, runId, { memberProgress: memberDefinitions.map((definition) => ({ agentId: definition.id, runId: `${runId}-${definition.id}`, status: 'queued', handoffPath: `${coordDir}/${definition.id}.md` })) });
+      const settledSummaries = await Promise.allSettled(memberDefinitions.map((definition) => runSinglePiNativeAgent(context, definition, {
+        task: `${promptBase}\n\nYou are team member ${definition.id}. Complete your analysis slice for the team task, read existing files as needed, do not edit application/source files, and write only ${coordDir}/${definition.id}.md with your handoff.`,
         runId: `${runId}-${definition.id}`,
         taskId,
         parentRunId: runId,
         request,
         options,
         container,
+        activeRun,
+        handoffPath: `${coordDir}/${definition.id}.md`,
+        teamStartedAt: startedAt,
       })));
+      const summaries = settledSummaries.map((summary, index) => summary.status === 'fulfilled'
+        ? summary.value
+        : { agentId: memberDefinitions[index]?.id ?? `member-${index}`, status: 'failed' as const, message: summary.reason instanceof Error ? summary.reason.message : String(summary.reason) });
       workerSummaries = summaries.map((summary) => `- ${summary.agentId}: ${summary.status}${summary.message ? ` (${summary.message})` : ''}`).join('\n');
     }
 
     const leaderPrompt = `${promptBase}\n\nYou are ${leaderDefinition?.id ?? request.agent}, the team lead reporting to Arria. ${memberDefinitions.length > 0 ? `The worker pass finished with:\n${workerSummaries}\n\nRead ${coordDir}/ and project files, integrate the workers' results, run validation, fix integration issues, and write ${coordDir}/team-lead-final.md.` : 'Complete the requested implementation, run validation, and report final status.'}`;
-    await runSinglePiNativeAgent(context, leaderDefinition ?? { id: request.agent, label: request.agent, prompt: '', source: 'runtime' }, {
+    const leaderResult = await runSinglePiNativeAgent(context, leaderDefinition ?? { id: request.agent, label: request.agent, prompt: '', source: 'runtime' }, {
       task: leaderPrompt,
       runId,
       taskId,
@@ -2740,25 +3267,34 @@ async function runPiNativeZergRequest(
       request,
       options,
       container,
+      activeRun,
+      handoffPath: memberDefinitions.length > 0 ? `${coordDir}/team-lead-final.md` : undefined,
     });
 
+    if (leaderResult.status === 'failed') {
+      throw new Error(leaderResult.message ?? 'pi native leader failed');
+    }
+
     const doneAt = timestamp();
+    const wasCancelled = activeRun?.cancelRequested === true || leaderResult.status === 'cancelled';
     const stopped = applyRuntimeTransition(container.read(), {
       entity: 'agent',
-      action: 'stop',
+      action: wasCancelled ? 'fail' : 'stop',
       id: runId,
       label: leaderDefinition?.label ?? request.agent,
       kind: 'subagent',
-      activity: 'pi native run complete',
-      substate: 'completed',
-      substateReason: 'pi native run complete',
+      status: wasCancelled ? 'cancelled' : 'done',
+      activity: wasCancelled ? 'pi native run cancelled' : 'pi native run complete',
+      substate: wasCancelled ? 'cancelled' : 'completed',
+      substateReason: wasCancelled ? 'pi native run cancelled' : 'pi native run complete',
+      metadata: { completedAt: doneAt, finalSummary: wasCancelled ? 'pi native run cancelled' : 'pi native run complete' },
     }, { now: () => new Date(doneAt) });
-    container.replace(updateRunTaskLifecycle(stopped, taskId, 'done', 'completed', 'pi native run complete', doneAt));
+    container.replace(updateRunTaskLifecycle(stopped, taskId, wasCancelled ? 'cancelled' : 'done', wasCancelled ? 'cancelled' : 'completed', wasCancelled ? 'pi native run cancelled' : 'pi native run complete', doneAt));
     appendLogToContainer(container, options, {
       source: 'adapter',
       level: 'info',
       kind: 'result',
-      message: 'pi native run complete',
+      message: wasCancelled ? 'pi native run cancelled' : 'pi native run complete',
       runId,
       agentId: request.agent,
       taskId,
@@ -2773,10 +3309,12 @@ async function runPiNativeZergRequest(
       label: leaderDefinition?.label ?? request.agent,
       kind: 'subagent',
       activity: message,
-      substate: 'failed',
-      substateReason: message,
+      status: activeRun?.cancelRequested ? 'cancelled' : 'failed',
+      substate: activeRun?.cancelRequested ? 'cancelled' : 'failed',
+      substateReason: activeRun?.cancelRequested ? 'pi native run cancelled' : message,
+      metadata: { completedAt: failedAt, errorSummary: activeRun?.cancelRequested ? undefined : message },
     }, { now: () => new Date(failedAt) });
-    container.replace(updateRunTaskLifecycle(failed, taskId, 'failed', 'failed', message, failedAt));
+    container.replace(updateRunTaskLifecycle(failed, taskId, activeRun?.cancelRequested ? 'cancelled' : 'failed', activeRun?.cancelRequested ? 'cancelled' : 'failed', activeRun?.cancelRequested ? 'pi native run cancelled' : message, failedAt));
     appendLogToContainer(container, options, {
       source: 'adapter',
       level: 'error',
@@ -2797,13 +3335,21 @@ type PiNativeRunContext = {
   request: ZergSubagentLaunchRequest;
   options: RuntimeCommandOptions;
   container: ZergStateContainer;
+  activeRun?: PiNativeActiveRun;
+  handoffPath?: string;
+  teamStartedAt?: string;
 };
 
 async function runSinglePiNativeAgent(
   context: StructuralPiExtensionContext,
   definition: ZergAgentDefinition,
   run: PiNativeRunContext,
-): Promise<{ agentId: string; status: 'done' | 'failed'; message?: string }> {
+): Promise<{ agentId: string; status: 'done' | 'failed' | 'cancelled'; message?: string }> {
+  if (run.activeRun?.cancelRequested) {
+    updateMemberProgress(run, definition.id, 'cancelled', { completedAt: (run.options.now ?? (() => new Date()))().toISOString(), handoffPath: run.handoffPath, message: 'cancel requested before session start' });
+    return { agentId: definition.id, status: 'cancelled', message: 'cancel requested before session start' };
+  }
+
   const sdk = await import('@earendil-works/pi-coding-agent');
   const cwd = resolvePiNativeCwd(context);
   const authStorage = sdk.AuthStorage.create();
@@ -2830,6 +3376,8 @@ async function runSinglePiNativeAgent(
     settingsManager,
   });
   const updateAt = () => (run.options.now ?? (() => new Date()))().toISOString();
+  run.activeRun?.sessions.add(session as PiNativeSessionHandle);
+  updateMemberProgress(run, definition.id, 'running', { startedAt: updateAt(), handoffPath: run.handoffPath });
   const unsubscribe = session.subscribe((event: { type?: string; [key: string]: unknown }) => {
     if (event.type === 'tool_execution_start') {
       appendLogToContainer(run.container, run.options, {
@@ -2855,7 +3403,14 @@ async function runSinglePiNativeAgent(
       taskId: run.taskId,
       data: { model: modelSpec, tools },
     });
+    if (run.activeRun?.cancelRequested) {
+      return { agentId: definition.id, status: 'cancelled', message: 'cancel requested before prompt' };
+    }
     await session.prompt(run.task, { source: 'extension' as never });
+    if (run.activeRun?.cancelRequested) {
+      updateMemberProgress(run, definition.id, 'cancelled', { completedAt: updateAt(), handoffPath: run.handoffPath, message: 'cancelled' });
+      return { agentId: definition.id, status: 'cancelled', message: 'cancelled' };
+    }
     appendLogToContainer(run.container, run.options, {
       source: 'adapter',
       level: 'info',
@@ -2866,6 +3421,7 @@ async function runSinglePiNativeAgent(
       taskId: run.taskId,
       data: { completedAt: updateAt() },
     });
+    updateMemberProgress(run, definition.id, 'done', { completedAt: updateAt(), handoffPath: run.handoffPath });
     return { agentId: definition.id, status: 'done' };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -2878,11 +3434,33 @@ async function runSinglePiNativeAgent(
       agentId: definition.id,
       taskId: run.taskId,
     });
-    return { agentId: definition.id, status: 'failed', message };
+    const status = run.activeRun?.cancelRequested ? 'cancelled' : 'failed';
+    updateMemberProgress(run, definition.id, status, { completedAt: updateAt(), handoffPath: run.handoffPath, message });
+    return { agentId: definition.id, status, message };
   } finally {
+    run.activeRun?.sessions.delete(session as PiNativeSessionHandle);
     unsubscribe();
     session.dispose();
   }
+}
+
+function updateMemberProgress(
+  run: PiNativeRunContext,
+  agentId: string,
+  status: 'queued' | 'starting' | 'running' | 'done' | 'failed' | 'cancelled',
+  patch: { startedAt?: string; completedAt?: string; handoffPath?: string; message?: string } = {},
+): void {
+  const state = run.container.read();
+  const parent = state.agents[run.parentRunId];
+  if (!parent) return;
+  const existing = Array.isArray(parent.metadata?.memberProgress) ? parent.metadata.memberProgress as Array<Record<string, unknown>> : [];
+  const next = [...existing];
+  const index = next.findIndex((member) => member.agentId === agentId);
+  const current = index >= 0 ? next[index]! : { agentId, runId: run.runId, handoffPath: run.handoffPath };
+  const updated = { ...current, agentId, runId: run.runId, status, ...patch };
+  if (index >= 0) next[index] = updated;
+  else next.push(updated);
+  setRunMetadata(run.container, run.parentRunId, { memberProgress: next });
 }
 
 function resolvePiNativeCwd(context: StructuralPiExtensionContext): string {
@@ -3780,6 +4358,16 @@ function clearRegisteredCommand(target: object, name: ZergCommandName): void {
   if (registeredNames.size === 0) {
     registeredCommandsByTarget.delete(target);
   }
+}
+
+function normalizeDisposableRegistration(value: unknown): DisposableRegistration | undefined {
+  if (typeof value === 'function') {
+    return { dispose: value as () => void };
+  }
+  if (isDisposableRegistration(value)) {
+    return { dispose: value.dispose.bind(value) };
+  }
+  return undefined;
 }
 
 function isDisposableRegistration(value: unknown): value is DisposableRegistration {

@@ -637,7 +637,9 @@ export function renderZergSubagentRunList(runs: readonly ZergSubagentRunSnapshot
     const model = typeof run.metadata?.model === 'string' ? ` model:${run.metadata.model}` : '';
     const substate = run.substate ? `/${run.substate}` : '';
     const startedAt = run.startedAt ? ` started:${run.startedAt}` : '';
-    lines.push(`- ${run.runId} (${run.status}${substate}) agent:${run.agentId}${label}${launchMode}${model}${task}${taskId}${startedAt}`);
+    const completedAt = run.completedAt ? ` completed:${run.completedAt}` : '';
+    const memberSummary = run.memberProgress?.length ? ` members:${run.memberProgress.map((member) => `${member.agentId}:${member.status}`).join(',')}` : '';
+    lines.push(`- ${run.runId} (${run.status}${substate}) agent:${run.agentId}${label}${launchMode}${model}${task}${taskId}${startedAt}${completedAt}${memberSummary}`);
   }
 
   return lines.map((line) => fit(line, width)).join('\n');
@@ -650,6 +652,7 @@ export function renderZergSubagentRunSummary(run: ZergSubagentRunSnapshot, optio
     `agent: ${run.agentId}`,
     `label: ${run.agentLabel ?? 'unknown'}`,
     `status: ${run.status}${run.substate ? `/${run.substate}` : ''}`,
+    ...(run.agentDefinitionId ? [`agent-definition-id: ${run.agentDefinitionId}`] : []),
     ...(run.substateReason ? [`substate-reason: ${sanitizeRuntimeActivity(run.substateReason)}`] : []),
     ...(run.taskId ? [`task-id: ${run.taskId}`] : []),
     ...(run.launchMode ? [`launch-mode: ${run.launchMode}`] : []),
@@ -659,7 +662,17 @@ export function renderZergSubagentRunSummary(run: ZergSubagentRunSnapshot, optio
     `task: ${run.task ?? 'none'}`,
     `started-at: ${run.startedAt ?? 'unknown'}`,
     `updated-at: ${run.updatedAt ?? 'unknown'}`,
+    `completed-at: ${run.completedAt ?? 'unknown'}`,
+    ...(run.finalSummary ? [`final-summary: ${sanitizeRuntimeActivity(run.finalSummary)}`] : []),
+    ...(run.errorSummary ? [`error-summary: ${sanitizeRuntimeActivity(run.errorSummary)}`] : []),
   ];
+
+  if (run.memberProgress?.length) {
+    lines.push('member-progress:');
+    for (const member of run.memberProgress) {
+      lines.push(`- ${member.agentId}: ${member.status}${member.handoffPath ? ` handoff:${member.handoffPath}` : ''}${member.message ? ` ${sanitizeRuntimeActivity(member.message)}` : ''}`);
+    }
+  }
 
   return lines.map((line) => fit(line, width)).join('\n');
 }
