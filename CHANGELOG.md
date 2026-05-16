@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-05-15
+
+### Added
+
+- Added native Pi SDK-backed `/zerg run` execution so `pi-zerg-swarm` can launch configured agents without the `pi-subagents` extension.
+- Added native team execution fallback for leader runs: configured team members run first with shared coordination files, then the leader integrates and reports.
+
+### Fixed
+
+- Removed the hard runtime dependency on the `pi-subagents` slash bridge; missing bridge now starts the native runner instead of failing with “Ensure pi-subagents is loaded.”
+
+### Changed
+
+- Bumped package manifest versions from `1.0.2` to `1.0.3` in `package.json` and `package-lock.json` (top-level + root package).
+- Added `@earendil-works/pi-coding-agent` as a runtime dependency for native Pi SDK execution.
+- Updated README current-release and check-version wording from `v1.0.2` to `v1.0.3`.
+
 ## [1.0.2] - 2026-05-15
 
 ### Fixed

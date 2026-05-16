@@ -1,5 +1,5 @@
 export const ZERG_COMMANDS = ['zerg', 'zerg-swarm', 'swarm'] as const;
-export const ZERG_EXTENSION_VERSION = '1.0.2' as const;
+export const ZERG_EXTENSION_VERSION = '1.0.3' as const;
 export type ZergCommandName = (typeof ZERG_COMMANDS)[number];
 export const ZERG_COMMAND_INVOCATIONS = ['/zerg', '/zerg-swarm', '/swarm'] as const;
 export type ZergCommandInvocation = (typeof ZERG_COMMAND_INVOCATIONS)[number];
@@ -183,7 +183,7 @@ export interface ZergLogState {
 }
 
 export interface ZergSubagentControlAdapter {
-  readonly kind: 'pi-slash-bridge' | 'fake' | 'unavailable';
+  readonly kind: 'pi-native' | 'pi-slash-bridge' | 'fake' | 'unavailable';
   launch(request: ZergSubagentLaunchRequest): ZergSubagentControlResult;
   interrupt?(runId?: string): ZergSubagentControlResult;
   listAgentDefinitions?(): readonly ZergAgentDefinition[];
@@ -513,6 +513,7 @@ export interface StructuralPiCustomOptions {
 }
 
 export interface StructuralPiCommandContext {
+  cwd?: string;
   hasUI?: boolean;
   ui?: {
     notify?(message: string, type?: 'info' | 'warning' | 'error'): void;

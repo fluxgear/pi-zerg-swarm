@@ -2178,7 +2178,7 @@ function renderZergControlStatus(state: ZergState, width: number): string {
     `logs: ${logState.records.length}/${logState.maxRecords}${latestLogWarning ? ` latest:${latestLogWarning.id} ${latestLogWarning.level} ${latestLogWarning.message}` : ''}`,
     `selected target: ${control.selectedTargetId ?? 'none'}`,
     `active run: ${control.activeRunId ?? 'none'}${activeRunSubstate}${activeRunReason}`,
-    `adapter: Pi slash bridge when available; commands /zerg run and /zerg interrupt`,
+    `adapter: Pi native runner; commands /zerg run and /zerg interrupt`,
     `latest audit: ${latestAudit}`,
   ].map((line) => line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line).join('\n');
 }
@@ -2190,14 +2190,7 @@ function createPiSlashBridgeAdapter(
 ): ZergSubagentControlAdapter {
   const events = context.events;
   if (!events || typeof events.emit !== 'function' || typeof events.on !== 'function') {
-    return {
-      kind: 'unavailable',
-      launch: () => ({ ok: false, message: 'Pi event bus is unavailable for subagent control.' }),
-      listAgentDefinitions: () => [],
-      getAgentDefinition: () => undefined,
-      listRuns: () => [],
-      getRun: () => undefined,
-    };
+    return createPiNativeAdapter(context, container, options);
   }
 
   type PendingRun = ZergSubagentRunSnapshot & { launched: boolean; started: boolean; completed: boolean };
@@ -2412,7 +2405,7 @@ function createPiSlashBridgeAdapter(
   ];
 
   return {
-    kind: 'pi-slash-bridge',
+    kind: 'pi-native',
     listAgentDefinitions() {
       return getAgentDefinitions(container.read());
     },
@@ -2539,35 +2532,31 @@ function createPiSlashBridgeAdapter(
       }
 
       if (!run.started) {
-        runsById.delete(requestId);
-        if (!hasExistingRun) {
-          const failed = applyRuntimeTransition(container.read(), {
-            entity: 'agent',
-            action: 'fail',
-            id: requestId,
-            label: request.agent,
-            kind: 'subagent',
-            activity: 'No pi-subagents slash bridge responded.',
-            substate: 'failed',
-            substateReason: 'No pi-subagents slash bridge responded.',
-          }, { now: options.now ?? (() => new Date()) });
-          container.replace(appendLogToState(failed, options, {
-            source: 'adapter',
-            level: 'error',
-            kind: 'error',
-            message: 'No pi-subagents slash bridge responded.',
-            runId: requestId,
-            agentId: request.agent,
-            taskId,
-            data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
-          }));
-        }
-        return {
-          ok: false,
+        run.started = true;
+        run.launched = true;
+        updatePendingRun(requestId, 'running', resolveTimestamp(), request.task, 'starting', 'pi native runner started');
+        const started = applyRuntimeTransition(container.read(), {
+          entity: 'agent',
+          action: 'start',
+          id: requestId,
+          label: agentLabel ?? request.agent,
+          kind: 'subagent',
+          activity: request.task,
+          substate: 'starting',
+          substateReason: 'pi native runner started',
+        }, { now: options.now ?? (() => new Date()) });
+        container.replace(updateRunTaskLifecycle(started, taskId, 'running', 'starting', 'pi native runner started', resolveTimestamp()));
+        appendLogToContainer(container, options, {
+          source: 'adapter',
+          level: 'info',
+          kind: 'text',
+          message: `pi native launch started ${requestId}`,
           runId: requestId,
+          agentId: request.agent,
           taskId,
-          message: 'No pi-subagents slash bridge responded. Ensure pi-subagents is loaded.',
-        };
+          data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
+        });
+        void runPiNativeZergRequest(context, container, options, request, requestId, taskId, launchMode);
       }
 
       run.launched = true;
@@ -2614,6 +2603,350 @@ function createPiSlashBridgeAdapter(
       for (const dispose of disposers) dispose();
       runsById.clear();
     },
+  };
+}
+
+function createPiNativeAdapter(
+  context: StructuralPiExtensionContext,
+  container: ZergStateContainer,
+  options: RuntimeCommandOptions,
+): ZergSubagentControlAdapter {
+  return {
+    kind: 'pi-native',
+    listAgentDefinitions() {
+      return getAgentDefinitions(container.read());
+    },
+    getAgentDefinition(id) {
+      return getAgentDefinition(container.read(), id);
+    },
+    listRuns() {
+      return getSubagentRunSnapshots(container.read());
+    },
+    getRun(runId) {
+      return getSubagentRunSnapshot(container.read(), runId);
+    },
+    launch(request) {
+      const requestId = request.runId ?? `zerg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const taskId = typeof request.taskId === 'string' && request.taskId.length > 0 ? request.taskId : undefined;
+      const launchMode = resolveLaunchMode(request);
+      const now = (options.now ?? (() => new Date()))().toISOString();
+      const definition = getAgentDefinition(container.read(), request.agent);
+      const label = definition?.label ?? request.agent;
+      updateZergControlState(container, { activeRunId: requestId }, `launched ${request.agent}`, options);
+      const started = applyRuntimeTransition(container.read(), {
+        entity: 'agent',
+        action: 'start',
+        id: requestId,
+        label,
+        kind: 'subagent',
+        activity: request.task,
+        substate: 'starting',
+        substateReason: 'pi native runner started',
+        metadata: {
+          ...(taskId ? { taskId } : {}),
+          launchMode,
+          ...(request.agentDefinitionId ? { agentDefinitionId: request.agentDefinitionId } : {}),
+          ...(request.model ? { model: request.model } : {}),
+          ...(request.fallbackModels?.length ? { fallbackModels: request.fallbackModels } : {}),
+          ...(request.maxTurns ? { maxTurns: request.maxTurns } : {}),
+        },
+      }, { now: () => new Date(now) });
+      container.replace(updateRunTaskLifecycle(started, taskId, 'running', 'starting', 'pi native runner started', now));
+      appendLogToContainer(container, options, {
+        source: 'adapter',
+        level: 'info',
+        kind: 'text',
+        message: `pi native launch started ${requestId}`,
+        runId: requestId,
+        agentId: request.agent,
+        taskId,
+        data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
+      });
+      void runPiNativeZergRequest(context, container, options, request, requestId, taskId, launchMode);
+      return { ok: true, runId: requestId, taskId, message: `zerg launched ${request.agent} as ${requestId} (${launchMode})` };
+    },
+    interrupt(runId) {
+      const target = runId || getZergControlState(container.read()).activeRunId;
+      if (!target) {
+        return { ok: false, message: 'No active zerg run to interrupt.' };
+      }
+      const snapshot = applyRuntimeTransition(container.read(), {
+        entity: 'agent',
+        action: 'progress',
+        id: target,
+        kind: 'subagent',
+        status: 'running',
+        activity: 'interrupt requested',
+        substate: 'cancelling',
+        substateReason: 'interrupt requested',
+      }, { now: options.now ?? (() => new Date()) });
+      container.replace(snapshot);
+      return { ok: true, runId: target, message: `interrupt requested for ${target}` };
+    },
+  };
+}
+
+async function runPiNativeZergRequest(
+  context: StructuralPiExtensionContext,
+  container: ZergStateContainer,
+  options: RuntimeCommandOptions,
+  request: ZergSubagentLaunchRequest,
+  runId: string,
+  taskId: string | undefined,
+  launchMode: ZergSubagentLaunchMode,
+): Promise<void> {
+  const timestamp = () => (options.now ?? (() => new Date()))().toISOString();
+  const state = container.read();
+  const leaderDefinition = getAgentDefinition(state, request.agent);
+  const ledTeam = Object.values(state.teams).find((team) => team.leaderAgentId === request.agent);
+  const memberDefinitions = ledTeam
+    ? (ledTeam.memberAgentIds ?? [])
+      .filter((memberId) => memberId !== request.agent)
+      .map((memberId) => getAgentDefinition(state, memberId))
+      .filter((definition): definition is ZergAgentDefinition => definition !== undefined)
+    : [];
+  const coordDir = `coord/zerg-${runId.replace(/^zerg-/, '')}`;
+
+  try {
+    const promptBase = [
+      `Run id: ${runId}`,
+      `Task: ${request.task}`,
+      `Launch mode: ${launchMode}`,
+      `Communication directory: ${coordDir}`,
+      'Do not use Larra.',
+      'Write concise status/handoff notes in the communication directory.',
+    ].join('\n');
+
+    let workerSummaries = '';
+    if (memberDefinitions.length > 0) {
+      const summaries = await Promise.all(memberDefinitions.map((definition) => runSinglePiNativeAgent(context, definition, {
+        task: `${promptBase}\n\nYou are team member ${definition.id}. Complete your slice for the team task, read existing files as needed, write code/tests as appropriate, and write ${coordDir}/${definition.id}.md with your handoff.`,
+        runId: `${runId}-${definition.id}`,
+        taskId,
+        parentRunId: runId,
+        request,
+        options,
+        container,
+      })));
+      workerSummaries = summaries.map((summary) => `- ${summary.agentId}: ${summary.status}${summary.message ? ` (${summary.message})` : ''}`).join('\n');
+    }
+
+    const leaderPrompt = `${promptBase}\n\nYou are ${leaderDefinition?.id ?? request.agent}, the team lead reporting to Arria. ${memberDefinitions.length > 0 ? `The worker pass finished with:\n${workerSummaries}\n\nRead ${coordDir}/ and project files, integrate the workers' results, run validation, fix integration issues, and write ${coordDir}/team-lead-final.md.` : 'Complete the requested implementation, run validation, and report final status.'}`;
+    await runSinglePiNativeAgent(context, leaderDefinition ?? { id: request.agent, label: request.agent, prompt: '', source: 'runtime' }, {
+      task: leaderPrompt,
+      runId,
+      taskId,
+      parentRunId: runId,
+      request,
+      options,
+      container,
+    });
+
+    const doneAt = timestamp();
+    const stopped = applyRuntimeTransition(container.read(), {
+      entity: 'agent',
+      action: 'stop',
+      id: runId,
+      label: leaderDefinition?.label ?? request.agent,
+      kind: 'subagent',
+      activity: 'pi native run complete',
+      substate: 'completed',
+      substateReason: 'pi native run complete',
+    }, { now: () => new Date(doneAt) });
+    container.replace(updateRunTaskLifecycle(stopped, taskId, 'done', 'completed', 'pi native run complete', doneAt));
+    appendLogToContainer(container, options, {
+      source: 'adapter',
+      level: 'info',
+      kind: 'result',
+      message: 'pi native run complete',
+      runId,
+      agentId: request.agent,
+      taskId,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failedAt = timestamp();
+    const failed = applyRuntimeTransition(container.read(), {
+      entity: 'agent',
+      action: 'fail',
+      id: runId,
+      label: leaderDefinition?.label ?? request.agent,
+      kind: 'subagent',
+      activity: message,
+      substate: 'failed',
+      substateReason: message,
+    }, { now: () => new Date(failedAt) });
+    container.replace(updateRunTaskLifecycle(failed, taskId, 'failed', 'failed', message, failedAt));
+    appendLogToContainer(container, options, {
+      source: 'adapter',
+      level: 'error',
+      kind: 'error',
+      message,
+      runId,
+      agentId: request.agent,
+      taskId,
+    });
+  }
+}
+
+type PiNativeRunContext = {
+  task: string;
+  runId: string;
+  parentRunId: string;
+  taskId: string | undefined;
+  request: ZergSubagentLaunchRequest;
+  options: RuntimeCommandOptions;
+  container: ZergStateContainer;
+};
+
+async function runSinglePiNativeAgent(
+  context: StructuralPiExtensionContext,
+  definition: ZergAgentDefinition,
+  run: PiNativeRunContext,
+): Promise<{ agentId: string; status: 'done' | 'failed'; message?: string }> {
+  const sdk = await import('@earendil-works/pi-coding-agent');
+  const cwd = resolvePiNativeCwd(context);
+  const authStorage = sdk.AuthStorage.create();
+  const modelRegistry = sdk.ModelRegistry.create(authStorage);
+  const modelSpec = definition.model ?? run.request.model;
+  const { modelId, thinkingLevel } = splitModelAndThinking(modelSpec);
+  const model = await resolvePiNativeModel(modelRegistry as never, modelId);
+  const tools = resolvePiNativeTools(definition.tools);
+  const settingsManager = sdk.SettingsManager.inMemory({
+    compaction: { enabled: false },
+    retry: { enabled: true, maxRetries: 2 },
+  });
+  const resourceLoader = createPiNativeResourceLoader(sdk, definition, run.task);
+  const sessionManager = sdk.SessionManager.create(cwd);
+  const { session } = await sdk.createAgentSession({
+    cwd,
+    model: model as never,
+    thinkingLevel: thinkingLevel as never,
+    authStorage,
+    modelRegistry,
+    resourceLoader: resourceLoader as never,
+    tools,
+    sessionManager,
+    settingsManager,
+  });
+  const updateAt = () => (run.options.now ?? (() => new Date()))().toISOString();
+  const unsubscribe = session.subscribe((event: { type?: string; [key: string]: unknown }) => {
+    if (event.type === 'tool_execution_start') {
+      appendLogToContainer(run.container, run.options, {
+        source: 'adapter',
+        level: 'info',
+        kind: 'tool',
+        message: `tool running: ${String((event as { toolName?: unknown }).toolName ?? 'tool')}`,
+        runId: run.parentRunId,
+        agentId: definition.id,
+        taskId: run.taskId,
+      });
+    }
+  });
+
+  try {
+    appendLogToContainer(run.container, run.options, {
+      source: 'adapter',
+      level: 'info',
+      kind: 'text',
+      message: `pi native agent started ${definition.id}`,
+      runId: run.parentRunId,
+      agentId: definition.id,
+      taskId: run.taskId,
+      data: { model: modelSpec, tools },
+    });
+    await session.prompt(run.task, { source: 'extension' as never });
+    appendLogToContainer(run.container, run.options, {
+      source: 'adapter',
+      level: 'info',
+      kind: 'result',
+      message: `pi native agent complete ${definition.id}`,
+      runId: run.parentRunId,
+      agentId: definition.id,
+      taskId: run.taskId,
+      data: { completedAt: updateAt() },
+    });
+    return { agentId: definition.id, status: 'done' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendLogToContainer(run.container, run.options, {
+      source: 'adapter',
+      level: 'error',
+      kind: 'error',
+      message: `${definition.id}: ${message}`,
+      runId: run.parentRunId,
+      agentId: definition.id,
+      taskId: run.taskId,
+    });
+    return { agentId: definition.id, status: 'failed', message };
+  } finally {
+    unsubscribe();
+    session.dispose();
+  }
+}
+
+function resolvePiNativeCwd(context: StructuralPiExtensionContext): string {
+  const candidate = (context as { cwd?: unknown }).cwd;
+  return typeof candidate === 'string' && candidate.length > 0 ? candidate : process.cwd();
+}
+
+function splitModelAndThinking(modelSpec: string | undefined): { modelId: string | undefined; thinkingLevel: string | undefined } {
+  if (!modelSpec) return { modelId: undefined, thinkingLevel: undefined };
+  const index = modelSpec.lastIndexOf(':');
+  if (index <= 0) return { modelId: modelSpec, thinkingLevel: undefined };
+  return { modelId: modelSpec.slice(0, index), thinkingLevel: modelSpec.slice(index + 1) };
+}
+
+async function resolvePiNativeModel(modelRegistry: { getAvailable(): Array<{ provider: string; id: string }> | Promise<Array<{ provider: string; id: string }>> }, modelId: string | undefined): Promise<unknown> {
+  const available = await Promise.resolve(modelRegistry.getAvailable());
+  if (available.length === 0) {
+    throw new Error('No available Pi models for native zerg run.');
+  }
+  if (!modelId) return available[0];
+  const requested = modelId.includes('/')
+    ? available.find((model) => `${model.provider}/${model.id}` === modelId)
+    : available.find((model) => model.id === modelId || `${model.provider}/${model.id}` === modelId);
+  if (!requested) {
+    throw new Error(`Model ${modelId} is not available for native zerg run.`);
+  }
+  return requested;
+}
+
+function resolvePiNativeTools(tools: readonly string[] | undefined): string[] {
+  const mapped = new Set<string>();
+  const source = tools && tools.length > 0 ? tools : ['read', 'bash', 'edit', 'write'];
+  for (const tool of source) {
+    if (tool === 'files') {
+      mapped.add('read');
+      mapped.add('edit');
+      mapped.add('write');
+    } else if (tool === 'shell') {
+      mapped.add('bash');
+    } else {
+      mapped.add(tool);
+    }
+  }
+  return [...mapped];
+}
+
+function createPiNativeResourceLoader(sdk: { createExtensionRuntime(): unknown }, definition: ZergAgentDefinition, task: string): unknown {
+  return {
+    getExtensions: () => ({ extensions: [], errors: [], runtime: sdk.createExtensionRuntime() }),
+    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    getThemes: () => ({ themes: [], diagnostics: [] }),
+    getAgentsFiles: () => ({ agentsFiles: [] }),
+    getSystemPrompt: () => [
+      definition.prompt || `You are ${definition.label ?? definition.id}, a zerg coding agent.`,
+      '',
+      'You are running inside pi-zerg-swarm native execution, not pi-subagents.',
+      'Do not use Larra unless the user explicitly asked for it in this project.',
+      'Coordinate through project files when asked to work in a team.',
+      `Current assigned task:\n${task}`,
+    ].join('\n'),
+    getAppendSystemPrompt: () => [],
+    extendResources: () => undefined,
+    reload: async () => undefined,
   };
 }
 
