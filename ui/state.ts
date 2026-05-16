@@ -1,7 +1,7 @@
 import { decodeKittyPrintable, matchesKey as matchesPiKey, type KeyId } from '@earendil-works/pi-tui';
 import type { ZergManagementPaneId, ZergManagementTargetKind, ZergManagementUiState, ZergOperatorMessageDeliveryStatus, ZergOperatorMessageRecord } from '../types.js';
 
-export const MANAGEMENT_PANES: ZergManagementPaneId[] = ['tree', 'detail', 'settings', 'chat'];
+export const MANAGEMENT_PANES: ZergManagementPaneId[] = ['tree', 'settings', 'chat', 'detail'];
 
 export function createManagementUiState(): ZergManagementUiState {
   return {

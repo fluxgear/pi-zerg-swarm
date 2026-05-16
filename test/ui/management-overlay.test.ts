@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createZergStateContainer } from '../../state.js';
+import { createZergState, createZergStateContainer } from '../../state.js';
 import type { StructuralPiCommandContext, ZergManagementTargetKind } from '../../types.js';
 import { openZergManagementOverlay, type ZergManagementOverlayActions } from '../../ui/management-overlay.js';
 
@@ -46,7 +46,12 @@ test('M9 management overlay uses ctx.ui.custom component path and disposes subsc
   });
 
   assert.equal((optionsSeen?.overlayOptions as { title?: string } | undefined)?.title, 'zerg config');
-  assert.ok(component?.render(100, 24).join('\n').includes('interactive management TUI'));
+  const initialRender = component?.render(100, 24).join('\n') ?? '';
+  assert.ok(initialRender.includes('zerg config'));
+  assert.ok(initialRender.includes('Use three steps'));
+  assert.ok(initialRender.includes('1 Select'));
+  assert.ok(initialRender.includes('2 Settings'));
+  assert.ok(initialRender.includes('3 Message'));
   container.update({ metadata: { ...container.snapshot().metadata, updatedAt: '2026-05-01T00:00:01.000Z' } });
   assert.equal(requestRenderCount, 1);
   component?.handleInput?.('q');
@@ -55,6 +60,90 @@ test('M9 management overlay uses ctx.ui.custom component path and disposes subsc
   const afterDispose = requestRenderCount;
   container.update({ metadata: { ...container.snapshot().metadata, updatedAt: '2026-05-01T00:00:02.000Z' } });
   assert.equal(requestRenderCount, afterDispose);
+});
+
+test('M9 management overlay preserves existing selected target and shows zerg control controller', async () => {
+  const container = createZergStateContainer(createZergState({
+    selectedNodeId: 'node-b',
+    agents: {
+      a: { id: 'a', label: 'Alpha', kind: 'subagent', status: 'idle' },
+      b: { id: 'b', label: 'Beta', kind: 'subagent', status: 'running' },
+    },
+    tree: {
+      'node-b': { id: 'node-b', label: 'Beta', kind: 'agent', refId: 'b', childIds: [] },
+    },
+    extensions: {
+      zergControl: { controller: 'pi' },
+    },
+  }));
+  let component: { render(width?: number, height?: number): string[]; dispose?(): void } | undefined;
+  const actions: ZergManagementOverlayActions = {
+    now: () => new Date('2026-05-01T00:00:00.000Z'),
+    toggleReadOnly: () => 'readonly toggled',
+    setAutomation: (mode) => `mode ${mode}`,
+    setController: (controller) => `controller ${controller}`,
+    approvePermission: (requestId) => `approved ${requestId}`,
+    denyPermission: (requestId) => `denied ${requestId}`,
+    selectTarget: (target: { id: string; kind: ZergManagementTargetKind }) => `selected ${target.kind} ${target.id}`,
+    interruptSelected: () => 'interrupt unavailable',
+    sendOperatorMessage: () => ({ status: 'transport-unavailable', statusDetail: 'transport unavailable' }),
+  };
+
+  await openZergManagementOverlay({
+    ui: {
+      custom(factory) {
+        component = (factory as () => typeof component)();
+        return undefined;
+      },
+    },
+  }, {
+    getSnapshot: () => container.snapshot(),
+    subscribe: () => () => undefined,
+    adapterKind: 'fake',
+    actions,
+  });
+
+  const rendered = component?.render(110, 24).join('\n') ?? '';
+  assert.ok(rendered.includes('Controller pi'));
+  assert.ok(rendered.includes('Selected: agent b'));
+  assert.ok(rendered.includes('agent: Beta (b)'));
+  assert.equal(rendered.includes('Selected: agent a'), false);
+  component?.dispose?.();
+});
+
+test('M9 management overlay keeps tree navigation usable after default selection render', async () => {
+  const container = createZergStateContainer(createZergState({
+    agents: {
+      a: { id: 'a', label: 'Alpha', kind: 'subagent', status: 'idle' },
+      b: { id: 'b', label: 'Beta', kind: 'subagent', status: 'idle' },
+    },
+  }));
+  let component: { render(width?: number, height?: number): string[]; handleInput?(data: string): void; dispose?(): void } | undefined;
+  const actions: ZergManagementOverlayActions = {
+    now: () => new Date('2026-05-01T00:00:00.000Z'),
+    toggleReadOnly: () => 'readonly toggled',
+    setAutomation: (mode) => `mode ${mode}`,
+    setController: (controller) => `controller ${controller}`,
+    approvePermission: (requestId) => `approved ${requestId}`,
+    denyPermission: (requestId) => `denied ${requestId}`,
+    selectTarget: (target: { id: string; kind: ZergManagementTargetKind }) => `selected ${target.kind} ${target.id}`,
+    interruptSelected: () => 'interrupt unavailable',
+    sendOperatorMessage: () => ({ status: 'transport-unavailable', statusDetail: 'transport unavailable' }),
+  };
+  await openZergManagementOverlay({ ui: { custom(factory) { component = (factory as () => typeof component)(); return undefined; } } }, {
+    getSnapshot: () => container.snapshot(),
+    subscribe: () => () => undefined,
+    adapterKind: 'fake',
+    actions,
+  });
+
+  component?.render(110, 24);
+  component?.handleInput?.('down');
+  component?.render(110, 24);
+  component?.handleInput?.('enter');
+  const rendered = component?.render(110, 24).join('\n') ?? '';
+  assert.ok(rendered.includes('Selected: agent b'));
+  component?.dispose?.();
 });
 
 test('M9 management overlay routes focus and chat keys through focused pane', () => {
@@ -83,7 +172,6 @@ test('M9 management overlay routes focus and chat keys through focused pane', ()
   component?.handleInput?.('down');
   component?.handleInput?.('down');
   component?.handleInput?.('enter');
-  component?.handleInput?.('tab');
   component?.handleInput?.('tab');
   component?.handleInput?.('tab');
   for (const char of 'remote rapid quorum') component?.handleInput?.(char);

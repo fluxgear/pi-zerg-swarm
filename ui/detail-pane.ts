@@ -1,5 +1,5 @@
 import type { ZergManagementTargetKind, ZergManagementUiState, ZergPermissionRequest, ZergState } from '../types.js';
-import { fitLine, healthGlyph, renderPane } from './components.js';
+import { fitLine, healthGlyph, renderPane, styleText, type UiThemeLike } from './components.js';
 
 export function resolveSelectedTarget(state: ZergState, uiState: ZergManagementUiState): { id: string; kind: ZergManagementTargetKind } | undefined {
   if (uiState.selectedTargetId && uiState.selectedTargetKind) {
@@ -14,16 +14,16 @@ export function resolveSelectedTarget(state: ZergState, uiState: ZergManagementU
   return undefined;
 }
 
-export function renderDetailPane(state: ZergState, uiState: ZergManagementUiState, width: number, height: number): string[] {
+export function renderDetailPane(state: ZergState, uiState: ZergManagementUiState, width: number, height: number, theme?: UiThemeLike): string[] {
   const selected = resolveSelectedTarget(state, uiState);
   const lines: string[] = [];
   if (!selected) {
-    lines.push('No confirmed target. Move in the tree and press enter to select.');
+    lines.push(styleText(theme, 'warning', 'No target selected yet. Use Select pane, then Enter.'));
     lines.push(`lifecycle: ${state.lifecycle}`);
     lines.push(`revision: ${state.revision}`);
     lines.push(`mode: ${state.mode.automation} | read-only: ${state.mode.readOnly ? 'on' : 'off'}`);
     lines.push(...latestGlobalSignals(state));
-    return renderPane(lines, { title: 'Detail / monitoring', focused: uiState.focusedPane === 'detail', width, height });
+    return renderPane(lines, { title: 'Details', focused: uiState.focusedPane === 'detail', width, height, theme });
   }
 
   if (selected.kind === 'agent') {
@@ -69,8 +69,8 @@ export function renderDetailPane(state: ZergState, uiState: ZergManagementUiStat
     }
   }
 
-  lines.push('actions: i interrupt active run/agent | chat pane records operator intervention honestly');
-  return renderPane(lines.map((line) => fitLine(line, width - 4)), { title: 'Detail / monitoring', focused: uiState.focusedPane === 'detail', width, height });
+  lines.push(styleText(theme, 'dim', 'action: i interrupts selected active run/agent'));
+  return renderPane(lines.map((line) => fitLine(line, width - 4)), { title: 'Details', focused: uiState.focusedPane === 'detail', width, height, theme });
 }
 
 function targetPermissionLines(state: ZergState, targetId: string): string[] {

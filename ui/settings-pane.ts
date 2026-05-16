@@ -1,5 +1,5 @@
 import type { AutomationMode, ZergControlController, ZergManagementUiState, ZergPermissionRequest, ZergState } from '../types.js';
-import { renderPane } from './components.js';
+import { renderPane, styleText, type UiThemeLike } from './components.js';
 
 export interface SettingsPaneActions {
   toggleReadOnly(): string;
@@ -53,18 +53,21 @@ export function cycleController(state: ZergState, actions: SettingsPaneActions):
   return actions.setController(next);
 }
 
-export function renderSettingsPane(state: ZergState, uiState: ZergManagementUiState, settingsState: SettingsPaneState, adapterKind: string, width: number, height: number): string[] {
+export function renderSettingsPane(state: ZergState, uiState: ZergManagementUiState, settingsState: SettingsPaneState, adapterKind: string, width: number, height: number, theme?: UiThemeLike): string[] {
   const pending = getPendingPermissionRows(state);
   settingsState.pendingCursor = pending.length === 0 ? 0 : Math.max(0, Math.min(settingsState.pendingCursor, pending.length - 1));
   const controller = getControlController(state);
+  const readOnly = state.mode.readOnly ? styleText(theme, 'warning', 'on') : styleText(theme, 'success', 'off');
+  const mode = styleText(theme, state.mode.automation === 'automatic' ? 'warning' : state.mode.automation === 'assisted' ? 'accent' : 'muted', state.mode.automation);
   const lines = [
-    `controller: ${controller} (c cycles operator/pi/zerg)`,
-    `automation: ${state.mode.automation} (m manual, a assisted, u automatic)`,
-    `read-only: ${state.mode.readOnly ? 'enabled' : 'disabled'} (r toggle)`,
-    `adapter: ${adapterKind}`,
-    `selected: ${uiState.selectedTargetKind ?? 'none'} ${uiState.selectedTargetId ?? ''}`.trim(),
+    `${styleText(theme, 'accent', 'Mode')} ${mode}   ${styleText(theme, 'accent', 'Read-only')} ${readOnly}`,
+    `${styleText(theme, 'accent', 'Controller')} ${controller}   ${styleText(theme, 'accent', 'Adapter')} ${adapterKind}`,
+    `Selected: ${uiState.selectedTargetKind ?? 'none'} ${uiState.selectedTargetId ?? ''}`.trim(),
     '',
-    `pending permissions (${pending.length})`,
+    'Quick keys:',
+    '  r read-only   m manual   a assisted   u automatic   c controller',
+    '',
+    `Pending approvals (${pending.length})`,
   ];
 
   if (pending.length === 0) {
@@ -74,14 +77,14 @@ export function renderSettingsPane(state: ZergState, uiState: ZergManagementUiSt
       const request = pending[index]!;
       lines.push(`${index === settingsState.pendingCursor ? '>' : ' '} ${request.id} [${request.kind}] ${request.summary}`);
     }
-    lines.push('p approve selected | d deny selected');
+    lines.push('p approve selected | d deny selected (press twice to confirm)');
   }
 
   if (settingsState.confirmation) {
     lines.push(`confirm: press ${settingsState.confirmation.action === 'approve' ? 'p' : 'd'} again for ${settingsState.confirmation.requestId}`);
   }
 
-  return renderPane(lines, { title: 'Settings / actions', focused: uiState.focusedPane === 'settings', width, height });
+  return renderPane(lines, { title: '2 Settings', focused: uiState.focusedPane === 'settings', width, height, theme });
 }
 
 function getControlController(state: ZergState): ZergControlController {

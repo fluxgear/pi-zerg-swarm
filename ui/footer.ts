@@ -1,7 +1,7 @@
 import type { ZergManagementUiState, ZergState } from '../types.js';
-import { fitLine } from './components.js';
+import { fitRawLine, styleText, type UiThemeLike } from './components.js';
 
-export function renderManagementFooter(state: ZergState, uiState: ZergManagementUiState, adapterKind: string, width: number): string[] {
+export function renderManagementFooter(state: ZergState, uiState: ZergManagementUiState, adapterKind: string, width: number, theme?: UiThemeLike): string[] {
   const mode = `${state.mode.automation}${state.mode.readOnly ? '/read-only' : ''}`;
   const selected = uiState.selectedTargetId ? `${uiState.selectedTargetKind}:${uiState.selectedTargetId}` : 'none';
   const zergControl = state.extensions.zergControl as { controller?: unknown } | undefined;
@@ -9,8 +9,8 @@ export function renderManagementFooter(state: ZergState, uiState: ZergManagement
     ? zergControl.controller
     : state.mode.controller;
   return [
-    fitLine(`focus ${uiState.focusedPane} | selected ${selected} | controller ${controller} | mode ${mode} | adapter ${adapterKind} | rev ${state.revision} | updated ${state.metadata.updatedAt}`, width),
-    fitLine('keys: tab/shift-tab focus | ↑↓ navigate | ←/→ tree | enter select/send | r read-only | m/a/u modes | c controller | p/d permissions | i interrupt | x cancel chat | q/esc close', width),
-    ...(uiState.statusMessage ? [fitLine(`status: ${uiState.statusMessage}`, width)] : []),
+    fitRawLine(`${styleText(theme, 'muted', 'Focus')} ${styleText(theme, 'accent', uiState.focusedPane)}  ${styleText(theme, 'muted', 'Selected')} ${selected}  ${styleText(theme, 'muted', 'Controller')} ${controller}  ${styleText(theme, 'muted', 'Mode')} ${mode}  ${styleText(theme, 'muted', 'Adapter')} ${adapterKind}  ${styleText(theme, 'muted', 'Rev')} ${state.revision}`, width),
+    fitRawLine(`${styleText(theme, 'dim', 'Keys')} Tab focus · ↑↓ move · Enter select/send · r read-only · m/a/u mode · c controller · p/d approve/deny · i interrupt · Ctrl+X clear · q/Esc close`, width),
+    ...(uiState.statusMessage ? [fitRawLine(`${styleText(theme, 'accent', 'Status')} ${uiState.statusMessage}`, width)] : []),
   ];
 }

@@ -2455,10 +2455,12 @@ test('createPiZergCommandHandler renders full config overlay and reuses manageme
   assert.equal(customOptions?.overlay, true);
   assert.equal((customOptions?.overlayOptions as { title?: string } | undefined)?.title, 'zerg config');
   assert.ok(rendered[0]?.includes('zerg config'));
-  assert.ok(rendered[0]?.includes('interactive management TUI'));
-  assert.ok(rendered[1]?.includes('Live tree'));
+  assert.ok(rendered[0]?.includes('Use three steps'));
+  assert.ok(rendered[0]?.includes('1 Select'));
+  assert.ok(rendered[0]?.includes('2 Settings'));
+  assert.ok(rendered[1]?.includes('1 Select'));
   assert.ok(rendered[1]?.includes('worker-'));
-  assert.ok(rendered[2]?.includes('status: selected agent worker-'));
+  assert.ok(rendered[2]?.includes('selected agent worker-'));
   assert.ok(rendered[3]?.includes('press p again to approve perm-overlay'));
   assert.ok(rendered[4]?.includes('permission request perm-overlay approved'));
   assert.equal(requestRenderCount >= 10, true);

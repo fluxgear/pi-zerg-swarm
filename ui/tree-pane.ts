@@ -1,5 +1,5 @@
 import type { ZergManagementTargetKind, ZergManagementUiState, ZergState } from '../types.js';
-import { fitLine, renderPane, statusGlyph, visibleSlice } from './components.js';
+import { fitRawLine, renderPane, statusGlyph, styleText, type UiThemeLike, visibleSlice } from './components.js';
 import { isExpanded, setExpanded, setSelectedTarget, toggleExpanded } from './state.js';
 
 export interface ManagementTreeRow {
@@ -123,7 +123,7 @@ export function activateTreeSelection(uiState: ZergManagementUiState, treeState:
   return row;
 }
 
-export function renderTreePane(state: ZergState, uiState: ZergManagementUiState, treeState: TreePaneState, width: number, height: number): string[] {
+export function renderTreePane(state: ZergState, uiState: ZergManagementUiState, treeState: TreePaneState, width: number, height: number, theme?: UiThemeLike): string[] {
   const rows = buildManagementTreeRows(state, uiState);
   clampTreeCursor(treeState, rows.length);
   const bodyHeight = Math.max(3, height - 4);
@@ -135,12 +135,23 @@ export function renderTreePane(state: ZergState, uiState: ZergManagementUiState,
     const confirmed = row.targetId && row.targetId === uiState.selectedTargetId;
     const branch = row.expandable ? (row.expanded ? '▾' : '▸') : ' ';
     const depthMarker = row.depth === 0 ? '' : `${'›'.repeat(row.depth)} `;
-    const prefix = `${selected ? '>' : ' '} ${depthMarker}${branch} ${confirmed ? '*' : ' '}${statusGlyph(row.status)}`;
-    return fitLine(`${prefix} ${row.label}`, width - 4);
+    const cursor = selected ? styleText(theme, 'accent', '›') : ' ';
+    const mark = confirmed ? styleText(theme, 'success', '●') : ' ';
+    const glyph = styleText(theme, statusColor(row.status), statusGlyph(row.status));
+    const prefix = `${cursor} ${depthMarker}${branch} ${mark}${glyph}`;
+    return fitRawLine(`${prefix} ${row.label}`, width - 4);
   });
   if (rows.length === 0) {
     rendered.push('No agents, teams, or tasks.');
   }
-  rendered.push(`rows ${rows.length === 0 ? '0/0' : `${slice.offset + 1}-${Math.min(rows.length, slice.offset + slice.rows.length)}/${rows.length}`} | enter selects, ←/→ collapse/expand`);
-  return renderPane(rendered, { title: 'Live tree', focused: uiState.focusedPane === 'tree', width, height });
+  rendered.push(styleText(theme, 'dim', `rows ${rows.length === 0 ? '0/0' : `${slice.offset + 1}-${Math.min(rows.length, slice.offset + slice.rows.length)}/${rows.length}`} | Enter select | ←/→ expand`));
+  return renderPane(rendered, { title: '1 Select', focused: uiState.focusedPane === 'tree', width, height, theme });
+}
+
+function statusColor(status?: string): string {
+  if (status === 'done' || status === 'completed' || status === 'healthy') return 'success';
+  if (status === 'failed' || status === 'cancelled') return 'error';
+  if (status === 'blocked' || status === 'needs-attention' || status === 'degraded') return 'warning';
+  if (status === 'running' || status === 'executing' || status === 'starting') return 'accent';
+  return 'muted';
 }

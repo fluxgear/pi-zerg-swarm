@@ -1,5 +1,5 @@
 import type { ZergManagementTargetKind, ZergManagementUiState, ZergOperatorMessageDeliveryStatus, ZergState } from '../types.js';
-import { renderPane } from './components.js';
+import { renderPane, styleText, type UiThemeLike } from './components.js';
 import { addOperatorMessage, backspaceDraft, clearDraft } from './state.js';
 import { resolveSelectedTarget } from './detail-pane.js';
 
@@ -59,12 +59,12 @@ export function handleChatBackspace(uiState: ZergManagementUiState): void {
   backspaceDraft(uiState);
 }
 
-export function renderChatPane(state: ZergState, uiState: ZergManagementUiState, width: number, height: number, composerLines?: readonly string[]): string[] {
+export function renderChatPane(state: ZergState, uiState: ZergManagementUiState, width: number, height: number, composerLines?: readonly string[], theme?: UiThemeLike): string[] {
   const selected = resolveSelectedTarget(state, uiState);
   const targetLabel = selected ? `${selected.kind} ${selected.id}` : 'none';
   const lines = [
-    `target: ${targetLabel}`,
-    'delivery: intervention path only; never shown as delivered chat without verified transport',
+    `${styleText(theme, 'accent', 'Target')} ${targetLabel}`,
+    styleText(theme, 'dim', 'Messages are recorded as operator interventions, not fake chat delivery.'),
     '',
   ];
   const thread = uiState.messages.filter((message) => !selected || message.targetId === selected.id || message.routedTargetId === selected.id).slice(-Math.max(1, height - 9));
@@ -84,6 +84,6 @@ export function renderChatPane(state: ZergState, uiState: ZergManagementUiState,
   } else {
     lines.push(`draft: ${uiState.chatDraft || '(empty)'}`);
   }
-  lines.push('type in chat focus | enter send | ctrl+x cancel | esc close');
-  return renderPane(lines, { title: 'Conversation / operator message', focused: uiState.focusedPane === 'chat', width, height });
+  lines.push(styleText(theme, 'dim', 'Type here when focused. Enter sends. Ctrl+X clears.'));
+  return renderPane(lines, { title: '3 Message', focused: uiState.focusedPane === 'chat', width, height, theme });
 }

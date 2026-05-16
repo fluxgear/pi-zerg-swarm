@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Simplified the `/zerg config` overlay into a KISS three-step flow: select a target, adjust settings/permissions, then send an operator message.
+- Aligned the config overlay with Pi theme colors and clearer footer key hints, including `Ctrl+X` for clearing chat drafts.
+
 ## [1.0.4] - 2026-05-15
 
 ### Added

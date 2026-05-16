@@ -1,11 +1,11 @@
 import { Input, type Component, type Focusable } from '@earendil-works/pi-tui';
 import type { AutomationMode, StructuralPiCommandContext, StructuralPiCustomComponent, StructuralPiTuiHandle, ZergControlController, ZergManagementTargetKind, ZergManagementUiState, ZergOperatorMessageDeliveryStatus, ZergState } from '../types.js';
-import { columns, fitLine, fitRawLine } from './components.js';
+import { boldText, columns, fitRawLine, styleText, type UiThemeLike } from './components.js';
 import { ChatPaneActions, cancelChatDraft, renderChatPane, sendChatDraft } from './chat-pane.js';
-import { renderDetailPane } from './detail-pane.js';
+import { renderDetailPane, resolveSelectedTarget } from './detail-pane.js';
 import { renderManagementFooter } from './footer.js';
 import { SettingsPaneActions, applyPermissionFromSettings, createSettingsPaneState, cycleController, movePendingPermissionCursor, renderSettingsPane } from './settings-pane.js';
-import { MANAGEMENT_PANES, createManagementUiState, matchesKey, movePaneFocus } from './state.js';
+import { MANAGEMENT_PANES, createManagementUiState, matchesKey, movePaneFocus, setSelectedTarget } from './state.js';
 import { activateTreeSelection, buildManagementTreeRows, collapseTreeSelection, createTreePaneState, expandTreeSelection, moveTreeCursor, renderTreePane } from './tree-pane.js';
 
 export interface ZergManagementOverlayActions extends SettingsPaneActions, ChatPaneActions {
@@ -22,14 +22,14 @@ export interface ZergManagementOverlayOptions {
 
 export async function openZergManagementOverlay(context: StructuralPiCommandContext, options: ZergManagementOverlayOptions): Promise<void> {
   await Promise.resolve(context.ui?.custom?.(
-    (tui?: StructuralPiTuiHandle, _theme?: unknown, _keybindings?: unknown, done?: (result?: void) => void) => new ZergManagementOverlayComponent(tui, () => done?.(undefined), options),
+    (tui?: StructuralPiTuiHandle, theme?: unknown, _keybindings?: unknown, done?: (result?: void) => void) => new ZergManagementOverlayComponent(tui, theme as UiThemeLike | undefined, () => done?.(undefined), options),
     {
       overlay: true,
       overlayOptions: {
         title: 'zerg config',
         anchor: 'center',
-        width: '92%',
-        maxHeight: '88%',
+        width: '78%',
+        maxHeight: '82%',
         minWidth: 72,
       },
     },
@@ -50,6 +50,7 @@ export class ZergManagementOverlayComponent implements StructuralPiCustomCompone
 
   constructor(
     private readonly tui: StructuralPiTuiHandle | undefined,
+    private readonly theme: UiThemeLike | undefined,
     private readonly done: (() => void) | undefined,
     private readonly options: ZergManagementOverlayOptions,
   ) {
@@ -64,27 +65,28 @@ export class ZergManagementOverlayComponent implements StructuralPiCustomCompone
     this.unsubscribe = options.subscribe(() => this.requestRender());
   }
 
-  render(width = 120): string[] {
-    const height = this.resolveHeight();
+  render(width = 120, requestedHeight?: number): string[] {
+    const height = this.resolveHeight(requestedHeight);
     if (this.cachedLines && this.cachedWidth === width && this.cachedHeight === height) {
       return this.cachedLines;
     }
     const snapshot = this.options.getSnapshot();
     const safeWidth = Math.max(72, Math.floor(width));
     const safeHeight = Math.max(18, Math.floor(height));
-    const footer = renderManagementFooter(snapshot, this.uiState, this.options.adapterKind, safeWidth);
-    const header = [fitLine('zerg config — interactive management TUI', safeWidth)];
+    this.ensureDefaultTarget(snapshot);
+    const footer = renderManagementFooter(snapshot, this.uiState, this.options.adapterKind, safeWidth, this.theme);
+    const header = this.renderHeader(snapshot, safeWidth);
     const bodyHeight = Math.max(8, safeHeight - header.length - footer.length - 1);
     const topHeight = Math.max(4, Math.floor(bodyHeight * 0.58));
     const bottomHeight = Math.max(4, bodyHeight - topHeight);
     const leftWidth = Math.max(30, Math.floor((safeWidth - 2) * 0.42));
     const rightWidth = safeWidth - 2 - leftWidth;
-    const tree = renderTreePane(snapshot, this.uiState, this.treeState, leftWidth, topHeight);
-    const detail = renderDetailPane(snapshot, this.uiState, rightWidth, topHeight);
-    const settings = renderSettingsPane(snapshot, this.uiState, this.settingsState, this.options.adapterKind, leftWidth, bottomHeight);
+    const tree = renderTreePane(snapshot, this.uiState, this.treeState, leftWidth, topHeight, this.theme);
+    const detail = renderDetailPane(snapshot, this.uiState, rightWidth, topHeight, this.theme);
+    const settings = renderSettingsPane(snapshot, this.uiState, this.settingsState, this.options.adapterKind, leftWidth, bottomHeight, this.theme);
     this.chatInput.focused = this.focused && this.uiState.focusedPane === 'chat';
     const composerLines = this.chatInput.render(Math.max(8, rightWidth - 12));
-    const chat = renderChatPane(snapshot, this.uiState, rightWidth, bottomHeight, composerLines);
+    const chat = renderChatPane(snapshot, this.uiState, rightWidth, bottomHeight, composerLines, this.theme);
     const body = [
       ...columns(tree, detail, safeWidth),
       ...columns(settings, chat, safeWidth),
@@ -162,15 +164,62 @@ export class ZergManagementOverlayComponent implements StructuralPiCustomCompone
     };
   }
 
-  private resolveHeight(): number {
+  private resolveHeight(requestedHeight?: number): number {
+    if (typeof requestedHeight === 'number') {
+      return Math.max(18, Math.floor(requestedHeight));
+    }
     const rows = typeof this.tui?.terminal?.rows === 'number' ? this.tui.terminal.rows : 32;
-    return Math.max(18, Math.floor(rows * 0.88));
+    return Math.max(18, Math.floor(rows * 0.82));
   }
 
   private requestRender(): void {
     if (this.disposed) return;
     this.invalidate();
     this.tui?.requestRender?.();
+  }
+
+  private renderHeader(snapshot: ZergState, width: number): string[] {
+    const counts = `${Object.keys(snapshot.teams).length} teams · ${Object.keys(snapshot.agents).length} agents · ${Object.keys(snapshot.tasks).length} tasks`;
+    const pendingPermissions = this.countPendingPermissions(snapshot);
+    const readOnly = snapshot.mode.readOnly ? styleText(this.theme, 'warning', 'read-only on') : styleText(this.theme, 'success', 'edits allowed');
+    const title = boldText(this.theme, styleText(this.theme, 'accent', 'zerg config'));
+    return [
+      fitRawLine(`${title} ${styleText(this.theme, 'muted', '·')} ${styleText(this.theme, 'muted', counts)} ${styleText(this.theme, 'muted', '·')} ${readOnly}`, width),
+      fitRawLine(`${styleText(this.theme, 'dim', 'Use three steps:')} ${styleText(this.theme, 'accent', 'Select')} → ${styleText(this.theme, 'accent', 'Settings')} → ${styleText(this.theme, 'accent', 'Message')}   ${styleText(this.theme, 'dim', 'Tab changes focus')}`, width),
+      fitRawLine(`${styleText(this.theme, 'muted', 'Mode')} ${snapshot.mode.automation}   ${styleText(this.theme, 'muted', 'Controller')} ${this.resolveControlController(snapshot)}   ${styleText(this.theme, 'muted', 'Pending approvals')} ${pendingPermissions}`, width),
+    ];
+  }
+
+  private ensureDefaultTarget(snapshot: ZergState): void {
+    if (this.uiState.selectedTargetId && this.uiState.selectedTargetKind) return;
+    const rows = buildManagementTreeRows(snapshot, this.uiState);
+    const existing = resolveSelectedTarget(snapshot, this.uiState);
+    if (existing) {
+      setSelectedTarget(this.uiState, existing.id, existing.kind);
+      const existingIndex = rows.findIndex((row) => row.targetId === existing.id && row.targetKind === existing.kind);
+      if (existingIndex >= 0) this.treeState.cursor = existingIndex;
+      return;
+    }
+    const firstTargetIndex = rows.findIndex((row) => row.targetId && row.targetKind);
+    if (firstTargetIndex < 0) return;
+    const firstTarget = rows[firstTargetIndex]!;
+    this.treeState.cursor = firstTargetIndex;
+    setSelectedTarget(this.uiState, firstTarget.targetId, firstTarget.targetKind);
+  }
+
+  private resolveControlController(snapshot: ZergState): string {
+    const candidate = snapshot.extensions.zergControl as { controller?: unknown } | undefined;
+    return candidate?.controller === 'pi' || candidate?.controller === 'zerg' || candidate?.controller === 'operator'
+      ? candidate.controller
+      : 'operator';
+  }
+
+  private countPendingPermissions(snapshot: ZergState): number {
+    const candidate = snapshot.extensions.zergPermissions;
+    if (!candidate || typeof candidate !== 'object' || !Array.isArray((candidate as { requests?: unknown }).requests)) {
+      return 0;
+    }
+    return (candidate as { requests: Array<{ status?: unknown }> }).requests.filter((request) => request.status === 'pending').length;
   }
 
   private isChatTextInput(data: string): boolean {
@@ -228,7 +277,7 @@ export class ZergManagementOverlayComponent implements StructuralPiCustomCompone
     } else if (matchesKey(data, 'right')) {
       expandTreeSelection(this.uiState, this.treeState, rows);
       this.uiState.statusMessage = 'tree node expanded';
-    } else if (matchesKey(data, 'enter')) {
+    } else if (matchesKey(data, 'enter') || matchesKey(data, 'space')) {
       const row = activateTreeSelection(this.uiState, this.treeState, rows);
       this.uiState.statusMessage = row?.targetId && row.targetKind
         ? this.options.actions.selectTarget({ id: row.targetId, kind: row.targetKind })

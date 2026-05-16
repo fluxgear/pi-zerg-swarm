@@ -1,11 +1,18 @@
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import type { AgentStatus, ZergRuntimeHealth } from '../types.js';
 
+export interface UiThemeLike {
+  fg?(color: string, text: string): string;
+  bg?(color: string, text: string): string;
+  bold?(text: string): string;
+}
+
 export interface RenderPaneOptions {
   title: string;
   focused?: boolean;
   width: number;
   height?: number;
+  theme?: UiThemeLike;
 }
 
 export function sanitizeUiText(value: unknown): string {
@@ -32,20 +39,23 @@ export function fitRawLine(value: string, width: number): string {
 export function renderPane(lines: readonly string[], options: RenderPaneOptions): string[] {
   const width = Math.max(8, Math.floor(options.width));
   const title = `${options.focused ? '◆' : '◇'} ${options.title}`;
-  const border = `${options.focused ? '╔' : '┌'}${'═'.repeat(Math.max(0, width - 2))}${options.focused ? '╗' : '┐'}`;
-  const bottom = `${options.focused ? '╚' : '└'}${'═'.repeat(Math.max(0, width - 2))}${options.focused ? '╝' : '┘'}`;
+  const borderColor = options.focused ? 'borderAccent' : 'borderMuted';
+  const titleColor = options.focused ? 'accent' : 'muted';
+  const border = styleText(options.theme, borderColor, `${options.focused ? '╔' : '┌'}${'═'.repeat(Math.max(0, width - 2))}${options.focused ? '╗' : '┐'}`);
+  const bottom = styleText(options.theme, borderColor, `${options.focused ? '╚' : '└'}${'═'.repeat(Math.max(0, width - 2))}${options.focused ? '╝' : '┘'}`);
+  const side = styleText(options.theme, borderColor, '│');
   const bodyHeight = options.height === undefined ? lines.length : Math.max(0, options.height - 3);
-  const body = lines.slice(0, bodyHeight).map((line) => `│${fitRawLine(line, width - 2)}│`);
+  const body = lines.slice(0, bodyHeight).map((line) => `${side}${fitRawLine(line, width - 2)}${side}`);
   while (body.length < bodyHeight) {
-    body.push(`│${' '.repeat(Math.max(0, width - 2))}│`);
+    body.push(`${side}${' '.repeat(Math.max(0, width - 2))}${side}`);
   }
-  return [border, `│${fitLine(title, width - 2)}│`, ...body, bottom];
+  return [border, `${side}${fitRawLine(styleText(options.theme, titleColor, fitLine(title, width - 2)), width - 2)}${side}`, ...body, bottom];
 }
 
 export function columns(left: readonly string[], right: readonly string[], width: number): string[] {
-  const safeWidth = Math.max(20, Math.floor(width));
+  const safeWidth = Math.max(42, Math.floor(width));
   const gap = '  ';
-  const leftWidth = Math.max(10, Math.floor((safeWidth - gap.length) * 0.42));
+  const leftWidth = Math.max(30, Math.floor((safeWidth - gap.length) * 0.42));
   const rightWidth = Math.max(10, safeWidth - gap.length - leftWidth);
   const rows = Math.max(left.length, right.length);
   const output: string[] = [];
@@ -57,6 +67,14 @@ export function columns(left: readonly string[], right: readonly string[], width
 
 export function displayWidth(value: string): number {
   return visibleWidth(value);
+}
+
+export function styleText(theme: UiThemeLike | undefined, color: string, text: string): string {
+  return typeof theme?.fg === 'function' ? theme.fg(color, text) : text;
+}
+
+export function boldText(theme: UiThemeLike | undefined, text: string): string {
+  return typeof theme?.bold === 'function' ? theme.bold(text) : text;
 }
 
 export function statusGlyph(status?: AgentStatus | string): string {
