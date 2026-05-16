@@ -3711,6 +3711,65 @@ test('direct Zerg control API manages agents, teams, runs, logs, and interrupts 
   assert.equal(invalid.error?.code, 'invalid_request');
 });
 
+test('direct Zerg control API runs team ids through the configured leader and preserves original task text', async () => {
+  const container = createZergStateContainer();
+  const launches: ZergSubagentLaunchRequest[] = [];
+  const adapter: ZergSubagentControlAdapter = {
+    kind: 'fake',
+    launch(request) {
+      launches.push(request);
+      return { ok: true, runId: request.runId, taskId: request.taskId, message: `accepted ${request.runId}` };
+    },
+    async awaitRun(runId) {
+      const now = '2026-05-16T12:00:00.000Z';
+      const stopped = applyRuntimeTransition(container.read(), {
+        entity: 'agent',
+        action: 'stop',
+        id: runId,
+        kind: 'subagent',
+        status: 'done',
+        activity: 'pi native run complete',
+        substate: 'completed',
+        substateReason: 'pi native run complete',
+        metadata: { completedAt: now, finalSummary: 'pi native run complete' },
+      }, { now: () => new Date(now) });
+      container.replace(upsertTask(stopped, {
+        ...(stopped.tasks['task-team-run']!),
+        id: 'task-team-run',
+        title: stopped.tasks['task-team-run']?.title ?? 'team task',
+        status: 'done',
+        ownerAgentId: runId,
+        updatedAt: now,
+        substate: 'completed',
+        substateReason: 'pi native run complete',
+        substateUpdatedAt: now,
+      }));
+      return getSubagentRunSnapshot(container.read(), runId);
+    },
+  };
+  const control = createZergControl(container, {
+    subagentAdapter: adapter,
+    idFactory: { runId: () => 'zerg-team-run', taskId: () => 'task-team-run' },
+    now: () => new Date('2026-05-16T11:59:00.000Z'),
+  });
+
+  assert.equal((await control.execute({ action: 'agents.create', id: 'lead-direct', label: 'Lead Direct', prompt: 'lead directly' })).ok, true);
+  assert.equal((await control.execute({ action: 'agents.create', id: 'member-direct', label: 'Member Direct', prompt: 'member directly' })).ok, true);
+  assert.equal((await control.execute({ action: 'team.create', id: 'team-direct', label: 'Team Direct', leader: 'lead-direct', members: ['lead-direct', 'member-direct'], model: 'gpt-5' })).ok, true);
+
+  const task = 'preserve this original team task';
+  const result = await control.execute({ action: 'run', agent: 'team-direct', task, background: false });
+  assert.equal(result.ok, true);
+  assert.equal(launches[0]?.agent, 'lead-direct');
+  assert.equal(launches[0]?.agentDefinitionId, 'lead-direct');
+  assert.equal(result.runId, 'zerg-team-run');
+  assert.equal(result.taskId, 'task-team-run');
+  const run = (result.data as { run?: ZergSubagentRunSnapshot }).run;
+  assert.equal(run?.task, task);
+  assert.equal((run?.metadata as { teamId?: string; originalTask?: string } | undefined)?.teamId, 'team-direct');
+  assert.equal((run?.metadata as { teamId?: string; originalTask?: string } | undefined)?.originalTask, task);
+});
+
 test('direct Zerg control API preserves quoted run task text structurally', async () => {
   const launches: ZergSubagentLaunchRequest[] = [];
   const control = createZergControl({}, {

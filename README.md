@@ -1,15 +1,15 @@
 # pi-zerg-swarm
 
-`pi-zerg-swarm` is a Pi coding-agent extension scaffold for high-capacity agentic coding teams and subagents. It is **not** a Raspberry Pi hardware swarm project.
+`pi-zerg-swarm` is a Pi coding-agent extension for native configurable agent teams, direct structured control, and zerg-style subagent orchestration. It is **not** a Raspberry Pi hardware swarm project.
 
 
-> **v1.0.5 patch release status**
-> The stable release includes native asynchronous `/zerg run --bg`, process-lifetime run/log/interrupt inspection, direct structured automation through `createZergControl(...)`, Pi `zerg_control` tool registration when supported by the installed Pi API, and a simplified KISS `/zerg config` overlay.
+> **v1.0.6 patch release status**
+> The stable release includes native asynchronous `/zerg run --bg`, process-lifetime run/log/interrupt inspection, direct structured automation through `createZergControl(...)`, Pi `zerg_control` tool registration when supported by the installed Pi API, a simplified KISS `/zerg config` overlay, and native team handoff/task-preservation fixes.
 > Background run durability is process/session lifetime only; restart-durable persistence is not implemented in this patch.
 
 ## Release status
 
-- Current release: **v1.0.5** (patch release with native async/background execution, direct structured control API/tool registration, native team member concurrency, Claude Code-style runtime agent/team/model configuration, and a simplified interactive TUI management overlay).
+- Current release: **v1.0.6** (patch release with native async/background execution, direct structured control API/tool registration, native team member concurrency, team-id direct runs, Claude Code-style runtime agent/team/model configuration, and a simplified interactive TUI management overlay).
 - Historical milestones preserved for audit traceability: v0.8.0 implementation milestone and v0.8.1 audit follow-up patch.
 - Mandatory RC audits for the release path: `prompts/audit/generalized-deep-audit_v2-0-0.md`, `prompts/audit/milestone-audit_v2-0-0.md`, `prompts/audit/security-audit_v2-0-0.md`, `prompts/audit/performance-audit_v2-0-0.md`, `prompts/audit/hardening-sweep_v2-0-0.md`, and `prompts/audit/themed-cleanup_v2-0-0.md`.
 - Canonical repository metadata is configured for the public repo: https://github.com/fluxgear/pi-zerg-swarm.
@@ -20,8 +20,8 @@
 - `/zerg-swarm` — alias
 - `/swarm` — alias
 
-At v1.0.5 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, Claude Code-style runtime agent-definition configuration, native Pi SDK-backed run execution, task-first subagent spawn state, explicit fresh/fork launch-mode metadata, command-host permission queue state, fine-grained lifecycle substate hints, bounded structured log/output inspection, process-lifetime background run status/interrupt support, and a componentized Pi-native interactive management TUI for live tree/detail/settings/chat/footer management views through snapshot-safe shared-state-backed Pi command handlers.
-Command-host control grammar is available via `/zerg mode status|manual|assisted|automatic|revert [reason]`, `/zerg intervene agent|subagent|leader ...`, `/zerg agents list|show|create|update|delete` with per-agent `--model`, `--fallback-models`, `--max-turns`, tools, and permission settings, `/zerg agent`/`/zerg team` lifecycle configuration flags for team leaders/members/model metadata, `/zerg runs list|show <run-id>`, `/zerg permission status|list|request|approve|deny|cancel`, `/zerg logs status|list|show|json`, `/zerg config`, and `/zerg run <agent> <task> [--bg] [--fresh|--fork] [--model <model>]`; `/zerg run` does not require `pi-subagents` and uses the native Pi SDK runner when no slash bridge responds.
+At v1.0.6 these commands display help, status, expanded tree visibility, deterministic thinking-step parser output, Claude Code-style runtime agent-definition configuration, native Pi SDK-backed run execution, task-first subagent spawn state, explicit fresh/fork launch-mode metadata, command-host permission queue state, fine-grained lifecycle substate hints, bounded structured log/output inspection, process-lifetime background run status/interrupt support, and a componentized Pi-native interactive management TUI for live tree/detail/settings/chat/footer management views through snapshot-safe shared-state-backed Pi command handlers.
+Command-host control grammar is available via `/zerg mode status|manual|assisted|automatic|revert [reason]`, `/zerg intervene agent|subagent|leader ...`, `/zerg agents list|show|create|update|delete` with per-agent `--model`, `--fallback-models`, `--max-turns`, tools, and permission settings, `/zerg agent`/`/zerg team` lifecycle configuration flags for team leaders/members/model metadata, `/zerg runs list|show <run-id>`, `/zerg permission status|list|request|approve|deny|cancel`, `/zerg logs status|list|show|json`, `/zerg config`, and `/zerg run <agent-or-team> <task> [--bg] [--fresh|--fork] [--model <model>]`; `/zerg run` does not require `pi-subagents` and uses the native Pi SDK runner when no slash bridge responds.
 
 `/zerg config` is intended to stay simple: **Select** an agent/team/task, use **Settings** for mode/read-only/controller/permissions, and use **Message** to record an operator intervention. The overlay uses Pi theme colors when available and keeps the current key hints visible in the footer.
 
@@ -40,7 +40,7 @@ const status = await control.execute({ action: 'runs.show', runId: run.runId! })
 
 `registerZergSwarmExtension(...)` also registers a Pi custom tool named `zerg_control` when the installed Pi extension API exposes `registerTool(...)`. The tool calls the same structured control core and returns JSON-compatible `details`; callers do not need to parse slash-command output. Slash commands remain the human-facing wrapper.
 
-Background jobs are inspectable through `/zerg runs`, `/zerg logs`, direct `runs.*`/`logs.list`, and `/zerg interrupt`/`{ action: 'interrupt' }` while the Pi process/session remains alive. Restart-durable job persistence is not part of v1.0.5.
+Background jobs are inspectable through `/zerg runs`, `/zerg logs`, direct `runs.*`/`logs.list`, and `/zerg interrupt`/`{ action: 'interrupt' }` while the Pi process/session remains alive. Restart-durable job persistence is not part of v1.0.6.
 
 ## Architecture
 
@@ -111,7 +111,7 @@ npm run check:version
 ```
 `npm run build` performs strict TypeScript no-emit checking. `npm test` runs parser plus command-surface coverage, direct control API/tool registration coverage, state/container behavior, registration snapshot semantics, internal-patch event-bus wrapping/duplicate/rollback/dispose paths, render/lifecycle/mode/permission/log regressions, and focused M9 UI coverage for management overlay lifecycle, tree navigation, settings/actions, chat delivery semantics, and fake-Pi shared-state parity checks using Node's built-in test runner and `tsx`.
 `npm run check:package` validates MIT/license metadata, package/build private-path guards, package-lock↔package version sync, and repository metadata fields for release discoverability and consistency.
-`npm run check:version` confirms that the package release tag `v1.0.5` is at `HEAD` in post-tag state. During explicit pre-tag release prep, skip this check until the `v1.0.5` tag exists at `HEAD`; if run earlier, the failure is expected.
+`npm run check:version` confirms that the package release tag `v1.0.6` is at `HEAD` in post-tag state. During explicit pre-tag release prep, skip this check until the `v1.0.6` tag exists at `HEAD`; if run earlier, the failure is expected.
 
 ## Roadmap
 
@@ -143,8 +143,9 @@ npm run check:version
 - v1.0.2: patch release with package/runtime version alignment (completed)
 - v1.0.3: patch release with native Pi SDK-backed `/zerg run` execution without pi-subagents (completed)
 - v1.0.4: patch release with native async/background runs, direct structured control API/tool registration, accurate terminal run status, cancellation hooks, and concurrent native team workers (completed)
-- v1.0.5: patch release with simplified KISS `/zerg config` overlay UX and Pi theme-aware management panes (current release)
-- post-v1.0.5: restart-durable background persistence, delivered chat/process transport, and external transport validation
+- v1.0.5: patch release with simplified KISS `/zerg config` overlay UX and Pi theme-aware management panes (completed)
+- v1.0.6: patch release with native team handoff fallback persistence, original task preservation, team-id direct runs, and scope-safe native team prompts (current release)
+- post-v1.0.6: restart-durable background persistence, delivered chat/process transport, and external transport validation
 
 ## License
 

@@ -1,5 +1,5 @@
-import { mkdirSync } from 'node:fs';
-import { resolve as resolvePath } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve as resolvePath } from 'node:path';
 
 import { installInternalPatch } from './internal-patch.js';
 import { deriveThinkingSteps } from './parse.js';
@@ -1211,35 +1211,50 @@ function dispatchRunRequest(
   const current = container.read();
   const launchMode = resolveLaunchMode(requestInput);
   const definitions = getAgentDefinitions(current);
-  const resolvedDefinition = definitions.length > 0 ? getAgentDefinition(current, requestInput.agent) : undefined;
+  const directDefinition = definitions.length > 0 ? getAgentDefinition(current, requestInput.agent) : undefined;
+  const resolvedTeam = current.teams[requestInput.agent];
+  const teamLeaderDefinition = resolvedTeam?.leaderAgentId ? getAgentDefinition(current, resolvedTeam.leaderAgentId) : undefined;
+  const resolvedDefinition = directDefinition ?? teamLeaderDefinition;
   if (definitions.length > 0 && !resolvedDefinition) {
+    if (resolvedTeam) {
+      return { ok: false, output: `Team ${requestInput.agent} has no runnable leader agent definition.` };
+    }
     return { ok: false, output: `Unknown agent definition: ${requestInput.agent}` };
   }
+
+  const resolvedAgentId = resolvedDefinition?.id ?? requestInput.agent;
+  const resolvedAgentLabel = resolvedTeam?.label ?? resolvedDefinition?.label ?? requestInput.agent;
+  const teamMetadata = resolvedTeam?.metadata as { model?: unknown; fallbackModels?: unknown; maxTurns?: unknown } | undefined;
+  const teamModel = typeof teamMetadata?.model === 'string' ? teamMetadata.model : undefined;
+  const teamFallbackModels = Array.isArray(teamMetadata?.fallbackModels) ? teamMetadata.fallbackModels.filter((value): value is string => typeof value === 'string') : undefined;
+  const teamMaxTurns = typeof teamMetadata?.maxTurns === 'number' ? teamMetadata.maxTurns : undefined;
 
   if (current.mode.readOnly) {
     const queued = enqueuePermissionRequest(current, {
       kind: 'run',
-      targetId: resolvedDefinition?.id ?? requestInput.agent,
-      agentId: resolvedDefinition?.id ?? requestInput.agent,
+      targetId: resolvedTeam?.id ?? resolvedAgentId,
+      agentId: resolvedAgentId,
       requester: 'operator',
-      summary: `Run ${resolvedDefinition?.id ?? requestInput.agent}: ${requestInput.task}`,
+      summary: `Run ${resolvedTeam?.id ?? resolvedAgentId}: ${requestInput.task}`,
       details: `read-only blocked /zerg run (${launchMode})`,
       metadata: {
-        agent: resolvedDefinition?.id ?? requestInput.agent,
+        agent: resolvedAgentId,
+        ...(resolvedTeam ? { teamId: resolvedTeam.id } : {}),
         task: requestInput.task,
         launchMode,
         background: requestInput.background,
-        model: requestInput.model ?? resolvedDefinition?.model,
-        fallbackModels: requestInput.fallbackModels ?? resolvedDefinition?.fallbackModels,
-        maxTurns: requestInput.maxTurns ?? resolvedDefinition?.maxTurns,
+        model: requestInput.model ?? resolvedDefinition?.model ?? teamModel,
+        fallbackModels: requestInput.fallbackModels ?? resolvedDefinition?.fallbackModels ?? teamFallbackModels,
+        maxTurns: requestInput.maxTurns ?? resolvedDefinition?.maxTurns ?? teamMaxTurns,
       },
     }, { now: options.now ?? (() => new Date()) });
     const logged = appendLogToState(queued, options, {
       source: 'permission',
       level: 'warn',
       kind: 'text',
-      message: `read-only blocked zerg run for ${resolvedDefinition?.id ?? requestInput.agent}`,
-      agentId: resolvedDefinition?.id ?? requestInput.agent,
+      message: `read-only blocked zerg run for ${resolvedTeam?.id ?? resolvedAgentId}`,
+      agentId: resolvedAgentId,
+      teamId: resolvedTeam?.id,
       data: { launchMode, background: requestInput.background },
     });
     const snapshot = container.replace(logged);
@@ -1262,12 +1277,10 @@ function dispatchRunRequest(
   const nowTimestamp = now().toISOString();
   const runId = resolveRunId(options.idFactory);
   const taskId = resolveTaskId(options.idFactory);
-  const resolvedAgentId = resolvedDefinition?.id ?? requestInput.agent;
-  const resolvedAgentLabel = resolvedDefinition?.label ?? requestInput.agent;
 
-  const requestedModel = requestInput.model ?? resolvedDefinition?.model;
-  const requestedFallbackModels = requestInput.fallbackModels ?? resolvedDefinition?.fallbackModels;
-  const requestedMaxTurns = requestInput.maxTurns ?? resolvedDefinition?.maxTurns;
+  const requestedModel = requestInput.model ?? resolvedDefinition?.model ?? teamModel;
+  const requestedFallbackModels = requestInput.fallbackModels ?? resolvedDefinition?.fallbackModels ?? teamFallbackModels;
+  const requestedMaxTurns = requestInput.maxTurns ?? resolvedDefinition?.maxTurns ?? teamMaxTurns;
   const request: ZergSubagentLaunchRequest = {
     ...requestInput,
     agent: resolvedAgentId,
@@ -1285,7 +1298,9 @@ function dispatchRunRequest(
   const launchMetadata = {
     taskId,
     runId,
+    originalTask: requestInput.task,
     launchMode,
+    ...(resolvedTeam ? { teamId: resolvedTeam.id, teamLabel: resolvedTeam.label } : {}),
     ...(resolvedDefinition ? { agentDefinitionId: resolvedDefinition.id } : {}),
     agentDefinitionLabel: resolvedDefinition?.label,
     ...(request.model ? { model: request.model } : {}),
@@ -1298,6 +1313,7 @@ function dispatchRunRequest(
     title: requestInput.task,
     status: 'running' as const,
     ownerAgentId: runId,
+    teamId: resolvedTeam?.id,
     updatedAt: nowTimestamp,
     substate: 'queued' as const,
     substateReason: 'waiting for adapter launch',
@@ -1335,9 +1351,10 @@ function dispatchRunRequest(
     source: 'command',
     level: 'info',
     kind: 'text',
-    message: `zerg run queued for ${resolvedAgentId}`,
+    message: `zerg run queued for ${resolvedTeam?.id ?? resolvedAgentId}`,
     runId,
     agentId: resolvedAgentId,
+    teamId: resolvedTeam?.id,
     taskId,
     data: { launchMode, background: requestInput.background, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
   });
@@ -1358,6 +1375,7 @@ function dispatchRunRequest(
       message: successMessage,
       runId,
       agentId: resolvedAgentId,
+      teamId: resolvedTeam?.id,
       taskId,
       data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
     });
@@ -1388,6 +1406,7 @@ function dispatchRunRequest(
       title: requestInput.task,
       status: 'failed',
       ownerAgentId: runId,
+      teamId: resolvedTeam?.id,
       updatedAt: nowTimestamp,
       substate: 'failed',
       substateReason: result.message || 'adapter launch failed',
@@ -1403,6 +1422,7 @@ function dispatchRunRequest(
     message: result.message || 'adapter launch failed',
     runId,
     agentId: resolvedAgentId,
+    teamId: resolvedTeam?.id,
     taskId,
     data: { launchMode, model: request.model, fallbackModels: request.fallbackModels, maxTurns: request.maxTurns },
   }));
@@ -3225,7 +3245,7 @@ async function runPiNativeZergRequest(
 
   try {
     mkdirSync(coordPath, { recursive: true });
-    setRunMetadata(container, runId, { coordDir, coordPath });
+    setRunMetadata(container, runId, { coordDir, coordPath, originalTask: request.task });
 
     const promptBase = [
       `Run id: ${runId}`,
@@ -3233,6 +3253,7 @@ async function runPiNativeZergRequest(
       `Launch mode: ${launchMode}`,
       `Communication directory: ${coordDir}`,
       'Do not use Larra.',
+      'Follow the task scope exactly. Do not edit source, run mutating commands, or change git state unless the task explicitly asks for implementation work.',
       'Write concise status/handoff notes in the communication directory.',
     ].join('\n');
 
@@ -3241,7 +3262,7 @@ async function runPiNativeZergRequest(
       const startedAt = timestamp();
       setRunMetadata(container, runId, { memberProgress: memberDefinitions.map((definition) => ({ agentId: definition.id, runId: `${runId}-${definition.id}`, status: 'queued', handoffPath: `${coordDir}/${definition.id}.md` })) });
       const settledSummaries = await Promise.allSettled(memberDefinitions.map((definition) => runSinglePiNativeAgent(context, definition, {
-        task: `${promptBase}\n\nYou are team member ${definition.id}. Complete your analysis slice for the team task, read existing files as needed, do not edit application/source files, and write only ${coordDir}/${definition.id}.md with your handoff.`,
+        task: `${promptBase}\n\nYou are team member ${definition.id}. Complete your assigned slice for the team task, read existing files as needed, preserve the caller's scope, and write only ${coordDir}/${definition.id}.md with your handoff.`,
         runId: `${runId}-${definition.id}`,
         taskId,
         parentRunId: runId,
@@ -3258,7 +3279,10 @@ async function runPiNativeZergRequest(
       workerSummaries = summaries.map((summary) => `- ${summary.agentId}: ${summary.status}${summary.message ? ` (${summary.message})` : ''}`).join('\n');
     }
 
-    const leaderPrompt = `${promptBase}\n\nYou are ${leaderDefinition?.id ?? request.agent}, the team lead reporting to Arria. ${memberDefinitions.length > 0 ? `The worker pass finished with:\n${workerSummaries}\n\nRead ${coordDir}/ and project files, integrate the workers' results, run validation, fix integration issues, and write ${coordDir}/team-lead-final.md.` : 'Complete the requested implementation, run validation, and report final status.'}`;
+    const leaderInstruction = memberDefinitions.length > 0
+      ? `The worker pass finished with:\n${workerSummaries}\n\nRead ${coordDir}/ and project files as needed, integrate the workers' results within the original task scope, and write ${coordDir}/team-lead-final.md. Only run validation or modify files when the original task explicitly requests that work.`
+      : 'Complete the requested task according to its stated scope, only run validation or modify files when that scope requires it, and report final status.';
+    const leaderPrompt = `${promptBase}\n\nYou are ${leaderDefinition?.id ?? request.agent}, the team lead reporting to Arria. ${leaderInstruction}`;
     const leaderResult = await runSinglePiNativeAgent(context, leaderDefinition ?? { id: request.agent, label: request.agent, prompt: '', source: 'runtime' }, {
       task: leaderPrompt,
       runId,
@@ -3287,7 +3311,7 @@ async function runPiNativeZergRequest(
       activity: wasCancelled ? 'pi native run cancelled' : 'pi native run complete',
       substate: wasCancelled ? 'cancelled' : 'completed',
       substateReason: wasCancelled ? 'pi native run cancelled' : 'pi native run complete',
-      metadata: { completedAt: doneAt, finalSummary: wasCancelled ? 'pi native run cancelled' : 'pi native run complete' },
+      metadata: { completedAt: doneAt, finalSummary: wasCancelled ? 'pi native run cancelled' : 'pi native run complete', originalTask: request.task },
     }, { now: () => new Date(doneAt) });
     container.replace(updateRunTaskLifecycle(stopped, taskId, wasCancelled ? 'cancelled' : 'done', wasCancelled ? 'cancelled' : 'completed', wasCancelled ? 'pi native run cancelled' : 'pi native run complete', doneAt));
     appendLogToContainer(container, options, {
@@ -3312,7 +3336,7 @@ async function runPiNativeZergRequest(
       status: activeRun?.cancelRequested ? 'cancelled' : 'failed',
       substate: activeRun?.cancelRequested ? 'cancelled' : 'failed',
       substateReason: activeRun?.cancelRequested ? 'pi native run cancelled' : message,
-      metadata: { completedAt: failedAt, errorSummary: activeRun?.cancelRequested ? undefined : message },
+      metadata: { completedAt: failedAt, errorSummary: activeRun?.cancelRequested ? undefined : message, originalTask: request.task },
     }, { now: () => new Date(failedAt) });
     container.replace(updateRunTaskLifecycle(failed, taskId, activeRun?.cancelRequested ? 'cancelled' : 'failed', activeRun?.cancelRequested ? 'cancelled' : 'failed', activeRun?.cancelRequested ? 'pi native run cancelled' : message, failedAt));
     appendLogToContainer(container, options, {
@@ -3406,11 +3430,12 @@ async function runSinglePiNativeAgent(
     if (run.activeRun?.cancelRequested) {
       return { agentId: definition.id, status: 'cancelled', message: 'cancel requested before prompt' };
     }
-    await session.prompt(run.task, { source: 'extension' as never });
+    const promptResult = await session.prompt(run.task, { source: 'extension' as never });
     if (run.activeRun?.cancelRequested) {
       updateMemberProgress(run, definition.id, 'cancelled', { completedAt: updateAt(), handoffPath: run.handoffPath, message: 'cancelled' });
       return { agentId: definition.id, status: 'cancelled', message: 'cancelled' };
     }
+    const handoffMessage = ensurePiNativeHandoff(context, run, definition.id, promptResult);
     appendLogToContainer(run.container, run.options, {
       source: 'adapter',
       level: 'info',
@@ -3419,10 +3444,10 @@ async function runSinglePiNativeAgent(
       runId: run.parentRunId,
       agentId: definition.id,
       taskId: run.taskId,
-      data: { completedAt: updateAt() },
+      data: { completedAt: updateAt(), handoffPath: run.handoffPath, handoff: handoffMessage },
     });
-    updateMemberProgress(run, definition.id, 'done', { completedAt: updateAt(), handoffPath: run.handoffPath });
-    return { agentId: definition.id, status: 'done' };
+    updateMemberProgress(run, definition.id, 'done', { completedAt: updateAt(), handoffPath: run.handoffPath, message: handoffMessage });
+    return { agentId: definition.id, status: 'done', message: handoffMessage };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     appendLogToContainer(run.container, run.options, {
@@ -3442,6 +3467,71 @@ async function runSinglePiNativeAgent(
     unsubscribe();
     session.dispose();
   }
+}
+
+function ensurePiNativeHandoff(
+  context: StructuralPiExtensionContext,
+  run: PiNativeRunContext,
+  agentId: string,
+  promptResult: unknown,
+): string {
+  const fallback = stringifyPiNativePromptResult(promptResult) ?? `${agentId} completed; no textual response was captured by the Pi session.`;
+  if (!run.handoffPath) {
+    return fallback;
+  }
+
+  const cwd = resolvePiNativeCwd(context);
+  const fullPath = resolvePath(cwd, run.handoffPath);
+  const existing = readPiNativeHandoff(fullPath);
+  if (existing) {
+    return `handoff:${run.handoffPath}`;
+  }
+
+  try {
+    mkdirSync(dirname(fullPath), { recursive: true });
+    writeFileSync(fullPath, `${fallback.trim()}\n`, 'utf8');
+    return `handoff:${run.handoffPath}`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `handoff unavailable: ${message}`;
+  }
+}
+
+function readPiNativeHandoff(path: string): string | undefined {
+  if (!existsSync(path)) {
+    return undefined;
+  }
+  try {
+    const content = readFileSync(path, 'utf8').trim();
+    return content || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function stringifyPiNativePromptResult(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const text = value.trim();
+    return text || undefined;
+  }
+  if (Array.isArray(value)) {
+    const text = value.map((entry) => stringifyPiNativePromptResult(entry)).filter(Boolean).join('\n').trim();
+    return text || undefined;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const key of ['text', 'message', 'output', 'summary', 'content']) {
+      const text = stringifyPiNativePromptResult(record[key]);
+      if (text) return text;
+    }
+    try {
+      const serialized = JSON.stringify(value);
+      return serialized && serialized !== '{}' ? serialized : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 function updateMemberProgress(
@@ -3492,7 +3582,7 @@ async function resolvePiNativeModel(modelRegistry: { getAvailable(): Array<{ pro
 
 function resolvePiNativeTools(tools: readonly string[] | undefined): string[] {
   const mapped = new Set<string>();
-  const source = tools && tools.length > 0 ? tools : ['read', 'bash', 'edit', 'write'];
+  const source = tools && tools.length > 0 ? tools : ['read', 'bash'];
   for (const tool of source) {
     if (tool === 'files') {
       mapped.add('read');

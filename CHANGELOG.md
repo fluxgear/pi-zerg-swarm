@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-05-16
+
+### Fixed
+
+- Preserve original task text in terminal native run snapshots and allow direct control runs by configured team id.
+- Persist fallback native team handoff files when the Pi session does not write the advertised coordination file.
+- Keep native team leader prompts scope-safe so audit/read-only tasks are not upgraded into source-editing fix work.
+
+### Changed
+
+- Clarified stable-package wording and post-stable version-policy guidance.
+
 ## [1.0.5] - 2026-05-16
 
 ### Changed

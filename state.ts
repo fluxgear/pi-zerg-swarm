@@ -1194,13 +1194,16 @@ function fromAgentToRunSnapshot(agent: AgentIdentity): ZergSubagentRunSnapshot {
   const taskId = typeof metadata?.taskId === 'string' ? metadata.taskId : undefined;
   const launchMode = metadata?.launchMode === 'fork' || metadata?.launchMode === 'fresh' ? metadata.launchMode : undefined;
   const agentDefinitionId = typeof metadata?.agentDefinitionId === 'string' ? metadata.agentDefinitionId : undefined;
+  const originalTask = typeof metadata?.originalTask === 'string'
+    ? metadata.originalTask
+    : typeof metadata?.task === 'string' ? metadata.task : undefined;
   return {
     runId: agent.id,
     agentId: agentDefinitionId ?? agent.id,
     agentDefinitionId,
     agentLabel: agent.label,
     status: agent.status || 'unknown',
-    task: runtimeTask,
+    task: originalTask ?? runtimeTask,
     taskId,
     launchMode,
     substate: runtime?.substate,
