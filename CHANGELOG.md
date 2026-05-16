@@ -7,10 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-05-16
+
 ### Changed
 
 - Simplified the `/zerg config` overlay into a KISS three-step flow: select a target, adjust settings/permissions, then send an operator message.
 - Aligned the config overlay with Pi theme colors and clearer footer key hints, including `Ctrl+X` for clearing chat drafts.
+
+### Fixed
+
+- Preserved existing selected targets when opening `/zerg config` without locking tree navigation back to the first/default target.
+- Made the overlay header report the real Zerg control controller instead of the permission-mode controller.
 
 ## [1.0.4] - 2026-05-15
 
